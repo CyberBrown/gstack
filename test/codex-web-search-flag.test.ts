@@ -91,8 +91,8 @@ describe('deprecated codex web-search flag is gone (#2525)', () => {
 });
 
 describe('codex frontier model flag is present', () => {
-  test('the model flag defaults to gpt-6-astra while allowing GSTACK_CODEX_MODEL', () => {
-    expect(CODEX_MODEL_CONFIG_FLAG).toBe('-c "model=\\"${GSTACK_CODEX_MODEL:-gpt-6-astra}\\""');
+  test('the model flag defaults to pro on the gstack profile while allowing GSTACK_CODEX_MODEL', () => {
+    expect(CODEX_MODEL_CONFIG_FLAG).toBe('-p "${GSTACK_CODEX_PROFILE:-gstack}" -c "model=\\"${GSTACK_CODEX_MODEL:-pro}\\""');
   });
 
   test('native review overrides both model settings with the same selection', () => {
@@ -100,8 +100,8 @@ describe('codex frontier model flag is present', () => {
       const argv = execFileSync('bash', ['-c', `printf '%s\\n' ${CODEX_REVIEW_MODEL_CONFIG_FLAG}`], {
         env: { ...process.env, GSTACK_CODEX_MODEL: override }, encoding: 'utf8', timeout: 5000,
       }).trim().split('\n');
-      const expected = override || 'gpt-6-astra';
-      expect(argv).toEqual(['-c', `model="${expected}"`, '-c', `review_model="${expected}"`]);
+      const expected = override || 'pro';
+      expect(argv).toEqual(['-p', 'gstack', '-c', `model="${expected}"`, '-c', `review_model="${expected}"`]);
     }
     for (const file of ['codex/sections/review-mode.md', 'review/sections/adversarial.md', 'ship/sections/adversarial.md']) {
       const rendered = fs.readFileSync(path.join(ROOT, file), 'utf8');

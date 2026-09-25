@@ -63,9 +63,17 @@ export const CODEX_WEB_SEARCH_FLAG = `-c 'web_search="cached"'`;
  * agents, so gstack pins its own default and lets users override it per shell
  * with GSTACK_CODEX_MODEL or per invocation with an explicit `-c model=...`.
  * The -c form is accepted by both `codex exec` and `codex review`.
+ *
+ * Default lane: the `gstack` profile in ~/.codex/gstack.config.toml routes
+ * model `pro` through the estate LiteLLM gateway (logical lane pro -> Kimi
+ * k3-256k), authenticated by GSTACK_LLM_API_KEY via the profile's env_key.
+ * The default config.toml lane (gpt-6-astra + CODEX_API_KEY against
+ * api.openai.com) 401s on this key, so every gstack-owned invocation carries
+ * `-p gstack`; set GSTACK_CODEX_PROFILE to point at a different profile.
  */
-export const CODEX_FRONTIER_MODEL = 'gpt-6-astra';
-export const CODEX_MODEL_CONFIG_FLAG = `-c "model=\\"\${GSTACK_CODEX_MODEL:-${CODEX_FRONTIER_MODEL}}\\""`;
+export const CODEX_FRONTIER_MODEL = 'pro';
+export const CODEX_PROFILE_FLAG = `-p "\${GSTACK_CODEX_PROFILE:-gstack}"`;
+export const CODEX_MODEL_CONFIG_FLAG = `${CODEX_PROFILE_FLAG} -c "model=\\"\${GSTACK_CODEX_MODEL:-${CODEX_FRONTIER_MODEL}}\\""`;
 // Native review prefers review_model over model when the user has pinned it.
 export const CODEX_REVIEW_MODEL_CONFIG_FLAG = `${CODEX_MODEL_CONFIG_FLAG} -c "review_model=\\"\${GSTACK_CODEX_MODEL:-${CODEX_FRONTIER_MODEL}}\\""`;
 

@@ -284,9 +284,9 @@ describe.skipIf(process.platform === 'win32')('provider model selection', () => 
     return result.modelUsed;
   }
 
-  test('Codex defaults to Astra and explicit model wins over the environment', async () => {
+  test('Codex defaults to pro and explicit model wins over the environment', async () => {
     const adapter = new GptAdapter();
-    expect(await selected(adapter)).toBe('gpt-6-astra');
+    expect(await selected(adapter)).toBe('pro');
     process.env.GSTACK_CODEX_MODEL = 'gpt-5.6-sol';
     expect(await selected(adapter)).toBe('gpt-5.6-sol');
     expect(await selected(adapter, 'custom-codex')).toBe('custom-codex');
@@ -304,10 +304,10 @@ describe.skipIf(process.platform === 'win32')('provider model selection', () => 
     expect(await selected(adapter, 'explicit-model')).toBe('explicit-model');
   });
 
-  test('Codex skill evals default to Astra and preserve model overrides', () => {
+  test('Codex skill evals default to pro and preserve model overrides', () => {
     writeFileSync(join(workdir, 'SKILL.md'), '# Fixture\nReply OK.\n');
     for (const [override, explicit, expected] of [
-      ['', undefined, 'gpt-6-astra'],
+      ['', undefined, 'pro'],
       ['gpt-5.6-sol', undefined, 'gpt-5.6-sol'],
       ['gpt-5.6-sol', 'custom-codex', 'custom-codex'],
     ]) {

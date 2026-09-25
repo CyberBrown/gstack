@@ -523,8 +523,8 @@ If the output contains `AUTH_FAILED`, stop and tell the user:
 "No Codex authentication found. Run `codex login` or set `$CODEX_API_KEY` / `$OPENAI_API_KEY`, then re-run this skill."
 
 If the output contains `MODEL_UNUSABLE`, stop — auth exists but the account
-cannot use gstack's selected model (`GSTACK_CODEX_MODEL` or the `gpt-6-astra`
-default). Relay the probe's HINT lines and
+cannot use gstack's selected model (`GSTACK_CODEX_MODEL` or the `pro`
+default via the `gstack` profile). Relay the probe's HINT lines and
 follow the "Model not supported (HTTP 400)" recovery steps in
 `## Error Handling` below. Running the modes anyway just burns four
 invocations on the same 400 (#2477).
@@ -781,7 +781,10 @@ must be the file's terminal heading.
 ## Model & Reasoning
 
 **Model:** gstack defaults Codex invocations to the current frontier agentic coding
-model via `-c "model=\"${GSTACK_CODEX_MODEL:-gpt-6-astra}\""` (currently `gpt-6-astra`). A user can override
+model via `-p "${GSTACK_CODEX_PROFILE:-gstack}" -c "model=\"${GSTACK_CODEX_MODEL:-pro}\""` (currently `pro`, routed through the
+`gstack` profile in `~/.codex/gstack.config.toml` — the estate LiteLLM gateway,
+authenticated by `GSTACK_LLM_API_KEY`; override the profile with
+`GSTACK_CODEX_PROFILE`). A user can override
 the default for a shell with `GSTACK_CODEX_MODEL=<model>`, or for one request by naming a
 model in the `/codex` prompt.
 Native `codex review` also sets `review_model` to the selected model so a separate
@@ -854,7 +857,7 @@ If token count is not available, display: `Tokens: unknown`
   cannot catch it. Recovery, in order:
   1. Check whether `GSTACK_CODEX_MODEL` is set. If so, update it to a model the
      account can use.
-  2. If no override is set, gstack defaults to `gpt-6-astra`. If the account cannot
+  2. If no override is set, gstack defaults to `pro` on the `gstack` profile. If the account cannot
      use it yet, set `GSTACK_CODEX_MODEL=<supported-model>` or replace the default
      flag with `-c "model=\"<supported-model>\""`.
   3. If Codex printed `[notice.model_migrations]`, use that replacement model.

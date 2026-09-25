@@ -112,7 +112,8 @@ describe('codex model probe (#2477)', () => {
       expect(first.stdout.trim()).toBe('MODEL_OK');
       expect(first.status).toBe(0);
       expect(invocations(f)).toBe(1);
-      expect(lastArgs(f)).toContain('-c model="gpt-6-astra"');
+      expect(lastArgs(f)).toContain('-p gstack');
+      expect(lastArgs(f)).toContain('-c model="pro"');
       expect(fs.existsSync(path.join(f.gstackHome, '.codex-model-probe'))).toBe(true);
 
       const second = runProbe(f, 'ok');
@@ -135,7 +136,7 @@ describe('codex model probe (#2477)', () => {
       expect(r.stdout).toContain('gpt-6-astra');
       expect(r.status).toBe(1);
       // The deterministic 400 is config-driven: re-probing every preflight
-      // charged the user a 30s round trip + real tokens per review section.
+      // charged the user a probe-timeout round trip + real tokens per review section.
       // A second run within the 15-min TTL must NOT re-invoke codex, and must
       // keep the exit-1 + hints contract so callers can't tell the difference.
       expect(invocations(f)).toBe(1);
