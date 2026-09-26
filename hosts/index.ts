@@ -7,13 +7,19 @@
 
 import type { HostConfig } from '../scripts/host-config';
 import claude from './claude';
+import muse from './muse';
 import codex from './codex';
 import openclaw from './openclaw';
 import hermes from './hermes';
 import gbrain from './gbrain';
 
-/** All registered host configs. Add new hosts here. */
-export const ALL_HOST_CONFIGS: HostConfig[] = [claude, codex, openclaw, hermes, gbrain];
+/**
+ * All registered host configs. Add new hosts here.
+ * Order matters for `--host all`: codex runs after muse so the shared
+ * `.agents/skills/` dir keeps its long-standing codex flavor by default.
+ * `setup --host muse` regenerates muse flavor explicitly (last writer wins).
+ */
+export const ALL_HOST_CONFIGS: HostConfig[] = [claude, muse, codex, openclaw, hermes, gbrain];
 
 /** Map from host name to config. */
 export const HOST_CONFIG_MAP: Record<string, HostConfig> = Object.fromEntries(
@@ -60,4 +66,4 @@ export function getExternalHosts(): HostConfig[] {
 }
 
 // Re-export individual configs for direct import
-export { claude, codex, openclaw, hermes, gbrain };
+export { claude, muse, codex, openclaw, hermes, gbrain };

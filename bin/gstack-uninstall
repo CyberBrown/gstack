@@ -10,6 +10,7 @@
 #   ~/.claude/skills/gstack       — global Claude skill install (git clone or vendored)
 #   ~/.claude/skills/{skill}      — per-skill symlinks created by setup
 #   ~/.codex/skills/gstack*       — Codex skill install + per-skill symlinks
+#   ~/.config/muse/skills/gstack* — Muse Code skill install + per-skill symlinks
 #   ~/.gstack/                    — global state (config, analytics, sessions, projects,
 #                                   repos, installation-id, browse error logs)
 #   .claude/skills/gstack*        — project-local skill install (--local installs)
@@ -62,6 +63,7 @@ if [ "$FORCE" -eq 0 ]; then
   echo "This will remove gstack from your system:"
   { [ -d "$HOME/.claude/skills/gstack" ] || [ -L "$HOME/.claude/skills/gstack" ]; } && echo "  ~/.claude/skills/gstack (+ per-skill symlinks)"
   [ -d "$HOME/.codex/skills" ] && echo "  ~/.codex/skills/gstack*"
+  [ -d "$HOME/.config/muse/skills" ] && echo "  ~/.config/muse/skills/gstack*"
   [ "$KEEP_STATE" -eq 0 ] && [ -d "$STATE_DIR" ] && echo "  $STATE_DIR"
 
   if [ -n "$_GIT_ROOT" ]; then
@@ -164,6 +166,16 @@ if [ -d "$CODEX_SKILLS" ]; then
     [ -e "$_ITEM" ] || [ -L "$_ITEM" ] || continue
     rm -rf "$_ITEM"
     REMOVED+=("codex/$(basename "$_ITEM")")
+  done
+fi
+
+# ─── Remove Muse Code skills ────────────────────────────────
+MUSE_SKILLS="$HOME/.config/muse/skills"
+if [ -d "$MUSE_SKILLS" ]; then
+  for _ITEM in "$MUSE_SKILLS"/gstack*; do
+    [ -e "$_ITEM" ] || [ -L "$_ITEM" ] || continue
+    rm -rf "$_ITEM"
+    REMOVED+=("muse/$(basename "$_ITEM")")
   done
 fi
 

@@ -176,7 +176,16 @@ export function validateAllConfigs(configs: HostConfig[]): string[] {
     names.set(config.name, config.name);
 
     if (hostSubdirs.has(config.hostSubdir)) {
-      errors.push(`Duplicate hostSubdir '${config.hostSubdir}' (${config.name} and ${hostSubdirs.get(config.hostSubdir)})`);
+      // Codex and Muse share .agents/skills by design: Muse Code discovers
+      // project skills there and nowhere else. One checkout holds one flavor;
+      // setup --host selects the winner (last writer wins).
+      const other = hostSubdirs.get(config.hostSubdir);
+      const sharedPair =
+        (config.name === 'muse' && other === 'codex') ||
+        (config.name === 'codex' && other === 'muse');
+      if (!sharedPair) {
+        errors.push(`Duplicate hostSubdir '${config.hostSubdir}' (${config.name} and ${other})`);
+      }
     }
     hostSubdirs.set(config.hostSubdir, config.name);
 

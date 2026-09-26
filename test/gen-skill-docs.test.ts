@@ -1203,6 +1203,11 @@ describe('DESIGN_SKETCH resolver', () => {
 
 describe('CODEX_SECOND_OPINION resolver', () => {
   const content = fs.readFileSync(path.join(ROOT, 'office-hours', 'SKILL.md'), 'utf-8');
+  // .agents/skills is shared between the codex and muse flavors — regenerate
+  // codex flavor first so this read is deterministic (e.g. after setup --host muse).
+  Bun.spawnSync(['bun', 'run', 'scripts/gen-skill-docs.ts', '--host', 'codex'], {
+    cwd: ROOT, stdout: 'pipe', stderr: 'pipe',
+  });
   const codexContent = fs.readFileSync(path.join(ROOT, '.agents', 'skills', 'gstack-office-hours', 'SKILL.md'), 'utf-8');
 
   test('Phase 3.5 section appears in office-hours SKILL.md', () => {
@@ -1991,6 +1996,13 @@ describe('Parameterized host smoke tests', () => {
       });
 
       test('--dry-run freshness check passes', () => {
+        // Regenerate first: codex and muse share .agents/skills (Muse Code
+        // discovers project skills there and nowhere else), so the flavor on
+        // disk depends on which host block ran last. Generating here makes
+        // each block self-consistent; the check still verifies determinism.
+        Bun.spawnSync(['bun', 'run', 'scripts/gen-skill-docs.ts', '--host', hostConfig.name], {
+          cwd: ROOT, stdout: 'pipe', stderr: 'pipe',
+        });
         const result = Bun.spawnSync(
           ['bun', 'run', 'scripts/gen-skill-docs.ts', '--host', hostConfig.name, '--dry-run'],
           { cwd: ROOT, stdout: 'pipe', stderr: 'pipe' }
@@ -2020,8 +2032,12 @@ describe('--host all', () => {
     const output = result.stdout.toString();
     // All hosts should appear in output
     expect(output).toContain('FRESH: SKILL.md');           // claude
-    for (const hostConfig of getExternalHosts()) {
-      expect(output).toContain(`FRESH: ${hostConfig.hostSubdir}/skills/`);
+    // Unique subdirs only: codex and muse share .agents/skills (one flavor
+    // on disk at a time), so per-host FRESH can't hold for both at once.
+    // Each flavor's freshness is covered by its own smoke-block dry-run.
+    const subdirs = [...new Set(getExternalHosts().map(h => h.hostSubdir))];
+    for (const subdir of subdirs) {
+      expect(output).toContain(`FRESH: ${subdir}/skills/`);
     }
   });
 });
@@ -2132,14 +2148,30 @@ describe('setup script validation', () => {
     expect(fnBody).toContain('rm -f "$target"');
   });
 
-  test('setup supports --host auto|claude|codex', () => {
+  test('setup supports --host auto|claude|codex|muse', () => {
     expect(setupContent).toContain('--host');
-    expect(setupContent).toContain('claude|codex|auto');
+    expect(setupContent).toContain('claude|codex|muse|auto');
   });
 
-  test('auto mode detects claude and codex binaries', () => {
+  test('auto mode detects claude, codex, and muse binaries', () => {
     expect(setupContent).toContain('command -v claude');
     expect(setupContent).toContain('command -v codex');
+    expect(setupContent).toContain('command -v muse');
+  });
+
+  test('setup supports --host muse with install section and Muse skill path vars', () => {
+    expect(setupContent).toContain('INSTALL_MUSE=');
+    expect(setupContent).toContain('MUSE_SKILLS="$HOME/.config/muse/skills"');
+    expect(setupContent).toContain('MUSE_GSTACK="$MUSE_SKILLS/gstack"');
+  });
+
+  test('setup installs Muse skills into a nested gstack runtime root', () => {
+    expect(setupContent).toContain('create_muse_runtime_root');
+    expect(setupContent).toContain('link_muse_skill_dirs');
+  });
+
+  test('setup regenerates muse flavor for shared .agents dir', () => {
+    expect(setupContent).toContain('gen:skill-docs --host muse');
   });
 
   // T1: Sidecar skip guard — prevents .agents/skills/gstack from being linked as a skill

@@ -1,7 +1,7 @@
 # Adding a New Host to gstack
 
 gstack uses a declarative host config system. Each supported AI coding agent
-(Claude, Codex, OpenClaw, Hermes, GBrain) is defined
+(Claude, Muse, Codex, OpenClaw, Hermes, GBrain) is defined
 as a typed TypeScript config object. Adding a new host means creating one file
 and re-exporting it. Zero code changes to the generator, setup, or tooling.
 
@@ -10,12 +10,19 @@ and re-exporting it. Zero code changes to the generator, setup, or tooling.
 ```
 hosts/
 ├── claude.ts        # Primary host
+├── muse.ts          # Muse Code (shares .agents/ with codex)
 ├── codex.ts         # OpenAI Codex CLI
 ├── openclaw.ts      # OpenClaw (hybrid: config + adapter)
 ├── hermes.ts        # Hermes
 ├── gbrain.ts        # GBrain mod
 └── index.ts         # Registry: imports all, derives Host type
 ```
+
+Muse shares `.agents/skills/` with Codex — Muse Code discovers project
+skills there and nowhere else (verified via `muse skills list --source
+project`). One checkout holds one `.agents` flavor; `setup --host`
+regenerates the installing host's flavor last so it wins. Registry order
+keeps codex after muse so `--host all` preserves the codex default.
 
 Each config file exports a `HostConfig` object that tells the generator:
 - Where to put generated skills (paths)
@@ -94,11 +101,11 @@ import myhost from './myhost';
 
 // Add to ALL_HOST_CONFIGS array:
 export const ALL_HOST_CONFIGS: HostConfig[] = [
-  claude, codex, openclaw, myhost
+  claude, muse, codex, openclaw, myhost
 ];
 
 // Add to re-exports:
-export { claude, codex, openclaw, myhost };
+export { claude, muse, codex, openclaw, myhost };
 ```
 
 ### 3. Add to .gitignore

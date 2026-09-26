@@ -552,6 +552,27 @@ for (const currentHost of hostsToRun) {
       }
     }
 
+    // Remove stale output for skipped skills. Hosts sharing one output dir
+    // (codex + muse share .agents/skills — one checkout holds one flavor)
+    // otherwise leave the other flavor's excluded skills behind as phantoms
+    // (e.g. gstack-codex/ persisting under a codex generation). Scoped to
+    // external hosts only: the claude host writes into live source dirs.
+    if (currentHost !== 'claude' && currentHostConfig.generation.skipSkills?.length) {
+      for (const skipped of currentHostConfig.generation.skipSkills) {
+        const staleDir = path.join(ROOT, currentHostConfig.hostSubdir, 'skills', externalSkillName(skipped));
+        if (fs.existsSync(staleDir)) {
+          const relStale = path.relative(ROOT, staleDir);
+          if (DRY_RUN) {
+            console.log(`STALE (removed): ${relStale}/`);
+            hasChanges = true;
+          } else {
+            fs.rmSync(staleDir, { recursive: true });
+            console.log(`REMOVED (stale skipped skill): ${relStale}/`);
+          }
+        }
+      }
+    }
+
     // Generate gstack-lite and gstack-full for OpenClaw host
     if (currentHost === 'openclaw' && !DRY_RUN) {
       const openclawDir = path.join(ROOT, 'openclaw');

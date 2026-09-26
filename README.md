@@ -114,6 +114,7 @@ Or target a specific agent with `./setup --host <name>`:
 | Agent | Flag | Skills install to |
 |-------|------|-------------------|
 | OpenAI Codex CLI | `--host codex` | `~/.codex/skills/gstack-*/` |
+| Muse Code | `--host muse` | `~/.config/muse/skills/gstack-*/` |
 | Hermes | `--host hermes` | `~/.hermes/skills/gstack-*/` |
 | GBrain (mod) | `--host gbrain` | `~/.gbrain/skills/gstack-*/` |
 
@@ -345,6 +346,7 @@ rm -rf ~/.gstack
 
 # 5. Remove integrations (skip any you never installed)
 rm -rf ~/.codex/skills/gstack* 2>/dev/null
+rm -rf ~/.config/muse/skills/gstack* 2>/dev/null
 rm -rf ~/.openclaw/skills/gstack* 2>/dev/null
 
 # 6. Remove temp files

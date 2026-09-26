@@ -87,7 +87,7 @@ gstack/
 │   └── dist/        # Compiled binary
 ├── hosts/           # Typed host configs (one per AI agent)
 │   ├── claude.ts    # Primary host config
-│   ├── codex.ts, openclaw.ts  # Existing hosts
+│   ├── muse.ts, codex.ts, openclaw.ts  # Existing hosts
 │   ├── hermes.ts, gbrain.ts  # Agent runtime hosts
 │   └── index.ts     # Registry: exports all, derives Host type
 ├── scripts/         # Build + DX tooling
