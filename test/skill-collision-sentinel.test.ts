@@ -66,7 +66,7 @@ const KNOWN_BUILTINS: Record<string, string[]> = {
     'stats',          // Session stats
     'usage',          // API usage stats
   ],
-  // Add codex/kiro/opencode/slate/cursor/openclaw/hermes/factory/gbrain
+  // Add codex/openclaw/hermes/gbrain
   // built-in lists when we encounter collisions. Claude Code is the primary
   // shadow risk because it's the biggest audience and ships the most
   // frequently; other hosts collide less often.

@@ -57,10 +57,10 @@ jobs:
         run: bash browse/scripts/build-node-server.sh
         shell: bash
 
-      - name: Generate host SKILL.md outputs (.agents, .factory)
+      - name: Generate host SKILL.md outputs (.agents)
         # The golden-file regression tests in test/gen-skill-docs.test.ts read
-        # .agents/skills/gstack-ship/SKILL.md and .factory/skills/gstack-ship/
-        # SKILL.md. Both are gitignored — generated on demand by gen:skill-docs.
+        # .agents/skills/gstack-ship/SKILL.md. It is gitignored — generated
+        # on demand by gen:skill-docs.
         # On Mac/Linux CI the existing eval workflow regenerates these as part
         # of its own pipeline; the windows-free-tests lane doesn't share that
         # so it must regenerate explicitly.

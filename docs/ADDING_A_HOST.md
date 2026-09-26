@@ -1,7 +1,7 @@
 # Adding a New Host to gstack
 
 gstack uses a declarative host config system. Each supported AI coding agent
-(Claude, Codex, Factory, Kiro, OpenCode, Slate, Cursor, OpenClaw) is defined
+(Claude, Codex, OpenClaw, Hermes, GBrain) is defined
 as a typed TypeScript config object. Adding a new host means creating one file
 and re-exporting it. Zero code changes to the generator, setup, or tooling.
 
@@ -11,12 +11,9 @@ and re-exporting it. Zero code changes to the generator, setup, or tooling.
 hosts/
 ├── claude.ts        # Primary host
 ├── codex.ts         # OpenAI Codex CLI
-├── factory.ts       # Factory Droid
-├── kiro.ts          # Amazon Kiro
-├── opencode.ts      # OpenCode
-├── slate.ts         # Slate (Random Labs)
-├── cursor.ts        # Cursor
 ├── openclaw.ts      # OpenClaw (hybrid: config + adapter)
+├── hermes.ts        # Hermes
+├── gbrain.ts        # GBrain mod
 └── index.ts         # Registry: imports all, derives Host type
 ```
 
@@ -35,9 +32,9 @@ copy, and tests all read from these configs. None of them have per-host code.
 
 ### 1. Create the config file
 
-Copy an existing config as a starting point. `hosts/opencode.ts` is a good
-minimal example. `hosts/factory.ts` shows tool rewrites and conditional fields.
-`hosts/openclaw.ts` shows the adapter pattern for hosts with different tool models.
+Copy an existing config as a starting point. `hosts/codex.ts` is a good
+minimal example. `hosts/openclaw.ts` shows tool rewrites and the adapter
+pattern for hosts with different tool models.
 
 Create `hosts/myhost.ts`:
 
@@ -97,11 +94,11 @@ import myhost from './myhost';
 
 // Add to ALL_HOST_CONFIGS array:
 export const ALL_HOST_CONFIGS: HostConfig[] = [
-  claude, codex, factory, kiro, opencode, slate, cursor, openclaw, myhost
+  claude, codex, openclaw, myhost
 ];
 
 // Add to re-exports:
-export { claude, codex, factory, kiro, opencode, slate, cursor, openclaw, myhost };
+export { claude, codex, openclaw, myhost };
 ```
 
 ### 3. Add to .gitignore

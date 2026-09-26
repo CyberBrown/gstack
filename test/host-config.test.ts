@@ -16,11 +16,6 @@ import {
   getExternalHosts,
   claude,
   codex,
-  factory,
-  kiro,
-  opencode,
-  slate,
-  cursor,
   openclaw,
 } from '../hosts/index';
 import { HOST_PATHS } from '../scripts/resolvers/types';
@@ -30,8 +25,8 @@ const ROOT = path.resolve(import.meta.dir, '..');
 // ─── hosts/index.ts ─────────────────────────────────────────
 
 describe('hosts/index.ts', () => {
-  test('ALL_HOST_CONFIGS has 10 hosts', () => {
-    expect(ALL_HOST_CONFIGS.length).toBe(10);
+  test('ALL_HOST_CONFIGS has 5 hosts', () => {
+    expect(ALL_HOST_CONFIGS.length).toBe(5);
   });
 
   test('ALL_HOST_NAMES matches config names', () => {
@@ -47,11 +42,6 @@ describe('hosts/index.ts', () => {
   test('individual config re-exports match registry', () => {
     expect(claude.name).toBe('claude');
     expect(codex.name).toBe('codex');
-    expect(factory.name).toBe('factory');
-    expect(kiro.name).toBe('kiro');
-    expect(opencode.name).toBe('opencode');
-    expect(slate.name).toBe('slate');
-    expect(cursor.name).toBe('cursor');
     expect(openclaw.name).toBe('openclaw');
   });
 
@@ -73,7 +63,6 @@ describe('hosts/index.ts', () => {
 
   test('resolveHostArg resolves aliases', () => {
     expect(resolveHostArg('agents')).toBe('codex');
-    expect(resolveHostArg('droid')).toBe('factory');
   });
 
   test('resolveHostArg throws on unknown alias', () => {
@@ -354,21 +343,6 @@ describe('host-config-export.ts CLI', () => {
     expect(lines).toContain('review/checklist.md');
   });
 
-  test('opencode symlinks returns nested runtime assets', () => {
-    const { stdout, exitCode } = run('symlinks', 'opencode');
-    expect(exitCode).toBe(0);
-    const lines = stdout.split('\n');
-    expect(lines).toContain('bin');
-    expect(lines).toContain('browse/dist');
-    expect(lines).toContain('browse/bin');
-    expect(lines).toContain('review/design-checklist.md');
-    expect(lines).toContain('review/greptile-triage.md');
-    expect(lines).toContain('review/specialists');
-    expect(lines).toContain('qa/templates');
-    expect(lines).toContain('qa/references');
-    expect(lines).toContain('plan-devex-review/dx-hall-of-fame.md');
-  });
-
   test('symlinks with missing host exits 1', () => {
     const { exitCode } = run('symlinks');
     expect(exitCode).toBe(1);
@@ -404,11 +378,6 @@ describe('golden-file regression', () => {
     expect(current).toBe(golden);
   });
 
-  test('Factory ship skill matches golden baseline', () => {
-    const golden = fs.readFileSync(path.join(GOLDEN_DIR, 'factory-ship-SKILL.md'), 'utf-8');
-    const current = fs.readFileSync(path.join(ROOT, '.factory', 'skills', 'gstack-ship', 'SKILL.md'), 'utf-8');
-    expect(current).toBe(golden);
-  });
 });
 
 // ─── Individual host config correctness ─────────────────────
@@ -459,19 +428,6 @@ describe('host config correctness', () => {
     expect(codex.sidecar!.path).toBe('.agents/skills/gstack');
   });
 
-  test('factory has tool rewrites', () => {
-    expect(factory.toolRewrites).toBeDefined();
-    expect(Object.keys(factory.toolRewrites!).length).toBeGreaterThan(0);
-    expect(factory.toolRewrites!['use the Bash tool']).toBe('run this command');
-  });
-
-  test('factory has conditional disable-model-invocation field', () => {
-    expect(factory.frontmatter.conditionalFields).toBeDefined();
-    expect(factory.frontmatter.conditionalFields!.length).toBe(1);
-    expect(factory.frontmatter.conditionalFields![0].if).toEqual({ sensitive: true });
-    expect(factory.frontmatter.conditionalFields![0].add).toEqual({ 'disable-model-invocation': true });
-  });
-
   test('codex has suppressedResolvers for self-invocation prevention', () => {
     expect(codex.suppressedResolvers).toBeDefined();
     expect(codex.suppressedResolvers).toContain('CODEX_SECOND_OPINION');
@@ -508,10 +464,9 @@ describe('host config correctness', () => {
   });
 
   test('every host has coAuthorTrailer or undefined', () => {
-    // Claude, Codex, Factory, OpenClaw have explicit trailers
+    // Claude, Codex, OpenClaw have explicit trailers
     expect(claude.coAuthorTrailer).toContain('Claude');
     expect(codex.coAuthorTrailer).toContain('Codex');
-    expect(factory.coAuthorTrailer).toContain('Factory');
     expect(openclaw.coAuthorTrailer).toContain('OpenClaw');
   });
 
