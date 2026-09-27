@@ -725,6 +725,15 @@ describe('Autoplan parent publication guard', () => {
     const output: any = await withNativeProjectDirectory(f.cwd, () => withPublicationClock(() => runPublicationHook(f.input, ROOT)));
     expect(output.hookSpecificOutput?.permissionDecision).toBe('deny');
   });
+  test('an in-flight Read after a later human turn gets the disarmed answer (allow)', async () => {
+    const f = fixture(); f.message();
+    f.input.tool_input = { file_path: path.join(ROOT, 'autoplan/sections/design-phase.md') };
+    const { rows, record } = f.journal();
+    rows.push(record('assistant', [], { message: { role: 'assistant', content: [], stop_reason: 'end_turn' } }),
+      record('user', 'wait, which gstack is this?', { origin: { kind: 'human' }, promptId: randomUUID(), promptSource: 'typed' }));
+    fs.writeFileSync(f.input.transcript_path, rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});
+  });
   test('an in-flight Read can revisit an earlier established phase', async () => {
     const f = fixture('design', 'ceo'); f.journal();
     expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});

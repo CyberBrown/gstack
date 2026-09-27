@@ -377,7 +377,8 @@ function evaluatePublication(input: PublicationHookInput, root: string, events: 
     // compaction never do. A native slash or an actual init re-arms the guard.
     const human = before.filter(e => e.kind === 'user_turn').at(-1);
     if (disarmed(before, root)) {
-      if (pendingRead) fail('Current native phase-entry identity is unavailable after this invocation ended.');
+      // A later human turn released this invocation, so a journaled call is
+      // allowed here; a not-yet-journaled one gets the same answer, not a denial.
       return { allow: true };
     }
     if (human?.autoplan && !before.some(e => e.kind === 'use' && e.name === 'Bash' && e.order > human.order &&
