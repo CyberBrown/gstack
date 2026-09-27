@@ -114,11 +114,7 @@ Or target a specific agent with `./setup --host <name>`:
 | Agent | Flag | Skills install to |
 |-------|------|-------------------|
 | OpenAI Codex CLI | `--host codex` | `~/.codex/skills/gstack-*/` |
-| OpenCode | `--host opencode` | `~/.config/opencode/skills/gstack-*/` |
-| Cursor | `--host cursor` | `~/.cursor/skills/gstack-*/` |
-| Factory Droid | `--host factory` | `~/.factory/skills/gstack-*/` |
-| Slate | `--host slate` | `~/.slate/skills/gstack-*/` |
-| Kiro | `--host kiro` | `~/.kiro/skills/gstack-*/` |
+| Muse Code | `--host muse` | `~/.config/muse/skills/gstack-*/` |
 | Hermes | `--host hermes` | `~/.hermes/skills/gstack-*/` |
 | GBrain (mod) | `--host gbrain` | `~/.gbrain/skills/gstack-*/` |
 
@@ -350,8 +346,7 @@ rm -rf ~/.gstack
 
 # 5. Remove integrations (skip any you never installed)
 rm -rf ~/.codex/skills/gstack* 2>/dev/null
-rm -rf ~/.factory/skills/gstack* 2>/dev/null
-rm -rf ~/.kiro/skills/gstack* 2>/dev/null
+rm -rf ~/.config/muse/skills/gstack* 2>/dev/null
 rm -rf ~/.openclaw/skills/gstack* 2>/dev/null
 
 # 6. Remove temp files
@@ -359,7 +354,7 @@ rm -f /tmp/gstack-* 2>/dev/null
 
 # 7. Per-project cleanup (run from each project root)
 rm -rf .gstack .gstack-worktrees .claude/skills/gstack 2>/dev/null
-rm -rf .agents/skills/gstack* .factory/skills/gstack* 2>/dev/null
+rm -rf .agents/skills/gstack* 2>/dev/null
 ```
 
 ### Clean up CLAUDE.md

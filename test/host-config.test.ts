@@ -15,12 +15,8 @@ import {
   resolveHostArg,
   getExternalHosts,
   claude,
+  muse,
   codex,
-  factory,
-  kiro,
-  opencode,
-  slate,
-  cursor,
   openclaw,
 } from '../hosts/index';
 import { HOST_PATHS } from '../scripts/resolvers/types';
@@ -30,8 +26,8 @@ const ROOT = path.resolve(import.meta.dir, '..');
 // ─── hosts/index.ts ─────────────────────────────────────────
 
 describe('hosts/index.ts', () => {
-  test('ALL_HOST_CONFIGS has 10 hosts', () => {
-    expect(ALL_HOST_CONFIGS.length).toBe(10);
+  test('ALL_HOST_CONFIGS has 6 hosts', () => {
+    expect(ALL_HOST_CONFIGS.length).toBe(6);
   });
 
   test('ALL_HOST_NAMES matches config names', () => {
@@ -46,12 +42,8 @@ describe('hosts/index.ts', () => {
 
   test('individual config re-exports match registry', () => {
     expect(claude.name).toBe('claude');
+    expect(muse.name).toBe('muse');
     expect(codex.name).toBe('codex');
-    expect(factory.name).toBe('factory');
-    expect(kiro.name).toBe('kiro');
-    expect(opencode.name).toBe('opencode');
-    expect(slate.name).toBe('slate');
-    expect(cursor.name).toBe('cursor');
     expect(openclaw.name).toBe('openclaw');
   });
 
@@ -73,7 +65,6 @@ describe('hosts/index.ts', () => {
 
   test('resolveHostArg resolves aliases', () => {
     expect(resolveHostArg('agents')).toBe('codex');
-    expect(resolveHostArg('droid')).toBe('factory');
   });
 
   test('resolveHostArg throws on unknown alias', () => {
@@ -91,9 +82,14 @@ describe('hosts/index.ts', () => {
     expect(names.size).toBe(ALL_HOST_NAMES.length);
   });
 
-  test('every host has a unique hostSubdir', () => {
-    const subdirs = new Set(ALL_HOST_CONFIGS.map(c => c.hostSubdir));
-    expect(subdirs.size).toBe(ALL_HOST_CONFIGS.length);
+  test('every host has a unique hostSubdir (except codex/muse)', () => {
+    // Codex and Muse share .agents/skills by design: Muse Code discovers
+    // project skills there and nowhere else. One checkout holds one flavor;
+    // setup --host selects the winner (last writer wins).
+    const nonShared = ALL_HOST_CONFIGS.filter(c => c.name !== 'muse');
+    const subdirs = new Set(nonShared.map(c => c.hostSubdir));
+    expect(subdirs.size).toBe(nonShared.length);
+    expect(muse.hostSubdir).toBe(codex.hostSubdir);
   });
 
   test('every host has a unique globalRoot', () => {
@@ -354,21 +350,6 @@ describe('host-config-export.ts CLI', () => {
     expect(lines).toContain('review/checklist.md');
   });
 
-  test('opencode symlinks returns nested runtime assets', () => {
-    const { stdout, exitCode } = run('symlinks', 'opencode');
-    expect(exitCode).toBe(0);
-    const lines = stdout.split('\n');
-    expect(lines).toContain('bin');
-    expect(lines).toContain('browse/dist');
-    expect(lines).toContain('browse/bin');
-    expect(lines).toContain('review/design-checklist.md');
-    expect(lines).toContain('review/greptile-triage.md');
-    expect(lines).toContain('review/specialists');
-    expect(lines).toContain('qa/templates');
-    expect(lines).toContain('qa/references');
-    expect(lines).toContain('plan-devex-review/dx-hall-of-fame.md');
-  });
-
   test('symlinks with missing host exits 1', () => {
     const { exitCode } = run('symlinks');
     expect(exitCode).toBe(1);
@@ -392,6 +373,14 @@ describe('host-config-export.ts CLI', () => {
 describe('golden-file regression', () => {
   const GOLDEN_DIR = path.join(ROOT, 'test', 'fixtures', 'golden');
 
+  // .agents/skills is shared between the codex and muse flavors (Muse Code
+  // discovers project skills there and nowhere else). Regenerate codex flavor
+  // first so this comparison is deterministic no matter which flavor another
+  // suite left on disk.
+  Bun.spawnSync(['bun', 'run', 'scripts/gen-skill-docs.ts', '--host', 'codex'], {
+    cwd: ROOT, stdout: 'pipe', stderr: 'pipe',
+  });
+
   test('Claude ship skill matches golden baseline', () => {
     const golden = fs.readFileSync(path.join(GOLDEN_DIR, 'claude-ship-SKILL.md'), 'utf-8');
     const current = fs.readFileSync(path.join(ROOT, 'ship', 'SKILL.md'), 'utf-8');
@@ -404,11 +393,6 @@ describe('golden-file regression', () => {
     expect(current).toBe(golden);
   });
 
-  test('Factory ship skill matches golden baseline', () => {
-    const golden = fs.readFileSync(path.join(GOLDEN_DIR, 'factory-ship-SKILL.md'), 'utf-8');
-    const current = fs.readFileSync(path.join(ROOT, '.factory', 'skills', 'gstack-ship', 'SKILL.md'), 'utf-8');
-    expect(current).toBe(golden);
-  });
 });
 
 // ─── Individual host config correctness ─────────────────────
@@ -459,19 +443,6 @@ describe('host config correctness', () => {
     expect(codex.sidecar!.path).toBe('.agents/skills/gstack');
   });
 
-  test('factory has tool rewrites', () => {
-    expect(factory.toolRewrites).toBeDefined();
-    expect(Object.keys(factory.toolRewrites!).length).toBeGreaterThan(0);
-    expect(factory.toolRewrites!['use the Bash tool']).toBe('run this command');
-  });
-
-  test('factory has conditional disable-model-invocation field', () => {
-    expect(factory.frontmatter.conditionalFields).toBeDefined();
-    expect(factory.frontmatter.conditionalFields!.length).toBe(1);
-    expect(factory.frontmatter.conditionalFields![0].if).toEqual({ sensitive: true });
-    expect(factory.frontmatter.conditionalFields![0].add).toEqual({ 'disable-model-invocation': true });
-  });
-
   test('codex has suppressedResolvers for self-invocation prevention', () => {
     expect(codex.suppressedResolvers).toBeDefined();
     expect(codex.suppressedResolvers).toContain('CODEX_SECOND_OPINION');
@@ -482,6 +453,30 @@ describe('host config correctness', () => {
   test('codex has boundary instruction', () => {
     expect(codex.boundaryInstruction).toBeDefined();
     expect(codex.boundaryInstruction).toContain('Do NOT read');
+  });
+
+  test('muse installs to the Muse user skill dir', () => {
+    expect(muse.globalRoot).toBe('.config/muse/skills/gstack');
+    expect(muse.localSkillRoot).toBe('.agents/skills/gstack');
+    expect(muse.cliCommand).toBe('muse');
+    expect(muse.usesEnvVars).toBe(true);
+  });
+
+  test('muse has neutral tool rewrites', () => {
+    expect(muse.toolRewrites).toBeDefined();
+    expect(muse.toolRewrites!['use the Bash tool']).toBe('run this command');
+    expect(muse.toolRewrites!['use the Agent tool']).toBe('dispatch a subagent');
+  });
+
+  test('muse keeps outside-voice resolvers enabled', () => {
+    expect(muse.suppressedResolvers ?? []).not.toContain('CODEX_SECOND_OPINION');
+    expect(muse.suppressedResolvers ?? []).not.toContain('REVIEW_ARMY');
+    expect(muse.suppressedResolvers ?? []).not.toContain('ADVERSARIAL_STEP');
+  });
+
+  test('muse shares the codex sidecar path', () => {
+    expect(muse.sidecar).toBeDefined();
+    expect(muse.sidecar!.path).toBe(codex.sidecar!.path);
   });
 
   test('openclaw has tool rewrites for exec/read/write', () => {
@@ -508,16 +503,22 @@ describe('host config correctness', () => {
   });
 
   test('every host has coAuthorTrailer or undefined', () => {
-    // Claude, Codex, Factory, OpenClaw have explicit trailers
+    // Claude, Codex, OpenClaw have explicit trailers
     expect(claude.coAuthorTrailer).toContain('Claude');
     expect(codex.coAuthorTrailer).toContain('Codex');
-    expect(factory.coAuthorTrailer).toContain('Factory');
     expect(openclaw.coAuthorTrailer).toContain('OpenClaw');
   });
 
-  test('every external host skips the codex skill', () => {
+  test('every external host skips the codex skill (except muse)', () => {
+    // Muse keeps the codex + claude outside-voice skills: from Muse, neither
+    // is self-invocation, so the cross-model second-opinion loop stays on.
     for (const config of getExternalHosts()) {
-      expect(config.generation.skipSkills).toContain('codex');
+      if (config.name === 'muse') {
+        expect(config.generation.skipSkills ?? []).not.toContain('codex');
+        expect(config.generation.skipSkills ?? []).not.toContain('claude');
+      } else {
+        expect(config.generation.skipSkills).toContain('codex');
+      }
     }
   });
 

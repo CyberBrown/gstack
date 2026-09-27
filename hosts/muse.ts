@@ -1,43 +1,40 @@
 import type { HostConfig } from '../scripts/host-config';
 
-const factory: HostConfig = {
-  name: 'factory',
-  displayName: 'Factory Droid',
-  cliCommand: 'droid',
-  cliAliases: ['droid'],
+const muse: HostConfig = {
+  name: 'muse',
+  displayName: 'Muse Code',
+  cliCommand: 'muse',
+  cliAliases: [],
 
-  globalRoot: '.factory/skills/gstack',
-  localSkillRoot: '.factory/skills/gstack',
-  hostSubdir: '.factory',
+  globalRoot: '.config/muse/skills/gstack',
+  localSkillRoot: '.agents/skills/gstack',
+  hostSubdir: '.agents',
   usesEnvVars: true,
 
   frontmatter: {
     mode: 'allowlist',
-    keepFields: ['name', 'description', 'user-invocable'],
+    keepFields: ['name', 'description'],
     descriptionLimit: null,
-    extraFields: {
-      'user-invocable': true,
-    },
-    conditionalFields: [
-      { if: { sensitive: true }, add: { 'disable-model-invocation': true } },
-    ],
   },
 
   generation: {
     generateMetadata: false,
-    skipSkills: ['codex'],  // Codex skill is a Claude wrapper around codex exec
+    // Muse keeps every skill: from Muse, neither the Codex nor the Claude
+    // outside-voice skill is self-invocation, so both stay enabled.
+    skipSkills: [],
   },
 
   pathRewrites: [
     { from: '~/.claude/skills/gstack', to: '$GSTACK_ROOT' },
-    { from: '.claude/skills/gstack', to: '.factory/skills/gstack' },
-    { from: '.claude/skills/review', to: '.factory/skills/gstack/review' },
-    { from: '.claude/skills', to: '.factory/skills' },
+    { from: '.claude/skills/gstack', to: '.agents/skills/gstack' },
+    { from: '.claude/skills/review', to: '.agents/skills/gstack/review' },
+    { from: '.claude/skills', to: '.agents/skills' },
   ],
   toolRewrites: {
     'use the Bash tool': 'run this command',
     'use the Write tool': 'create this file',
     'use the Read tool': 'read the file',
+    'use the Edit tool': 'edit the file',
     'use the Agent tool': 'dispatch a subagent',
     'use the Grep tool': 'search for',
     'use the Glob tool': 'find files matching',
@@ -51,14 +48,17 @@ const factory: HostConfig = {
       'review': ['checklist.md', 'TODOS-format.md'],
     },
   },
+  sidecar: {
+    path: '.agents/skills/gstack',
+    symlinks: ['bin', 'browse', 'review', 'qa', 'ETHOS.md'],
+  },
 
   install: {
     prefixable: false,
     linkingStrategy: 'symlink-generated',
   },
 
-  coAuthorTrailer: 'Co-Authored-By: Factory Droid <droid@users.noreply.github.com>',
-  learningsMode: 'full',
+  learningsMode: 'basic',
 };
 
-export default factory;
+export default muse;

@@ -1,7 +1,7 @@
 /**
  * Declarative host config system.
  *
- * Each supported host (Claude, Codex, Factory, OpenCode, OpenClaw, etc.) is
+ * Each supported host (Claude, Codex, OpenClaw, Hermes, GBrain) is
  * defined as a typed HostConfig object in hosts/*.ts. This module provides
  * the interface, loader, and validator.
  *
@@ -15,19 +15,19 @@
  */
 
 export interface HostConfig {
-  /** Unique host identifier (e.g., 'opencode'). Must match filename in hosts/. */
+  /** Unique host identifier (e.g., 'codex'). Must match filename in hosts/. */
   name: string;
-  /** Human-readable name for UI/logs (e.g., 'OpenCode'). */
+  /** Human-readable name for UI/logs (e.g., 'OpenAI Codex CLI'). */
   displayName: string;
-  /** Binary name for `command -v` detection (e.g., 'opencode'). */
+  /** Binary name for `command -v` detection (e.g., 'codex'). */
   cliCommand: string;
-  /** Alternative binary names (e.g., ['droid'] for factory). */
+  /** Alternative binary names (e.g., ['agents'] for codex). */
   cliAliases?: string[];
 
   // --- Path Configuration ---
-  /** Global install path relative to $HOME (e.g., '.config/opencode/skills/gstack'). */
+  /** Global install path relative to $HOME (e.g., '.codex/skills/gstack'). */
   globalRoot: string;
-  /** Project-local skill path relative to repo root (e.g., '.opencode/skills/gstack'). */
+  /** Project-local skill path relative to repo root (e.g., '.agents/skills/gstack'). */
   localSkillRoot: string;
   /** Gitignored directory under repo root for generated docs (e.g., '.opencode'). */
   hostSubdir: string;
@@ -176,7 +176,16 @@ export function validateAllConfigs(configs: HostConfig[]): string[] {
     names.set(config.name, config.name);
 
     if (hostSubdirs.has(config.hostSubdir)) {
-      errors.push(`Duplicate hostSubdir '${config.hostSubdir}' (${config.name} and ${hostSubdirs.get(config.hostSubdir)})`);
+      // Codex and Muse share .agents/skills by design: Muse Code discovers
+      // project skills there and nowhere else. One checkout holds one flavor;
+      // setup --host selects the winner (last writer wins).
+      const other = hostSubdirs.get(config.hostSubdir);
+      const sharedPair =
+        (config.name === 'muse' && other === 'codex') ||
+        (config.name === 'codex' && other === 'muse');
+      if (!sharedPair) {
+        errors.push(`Duplicate hostSubdir '${config.hostSubdir}' (${config.name} and ${other})`);
+      }
     }
     hostSubdirs.set(config.hostSubdir, config.name);
 
