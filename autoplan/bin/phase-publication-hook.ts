@@ -367,7 +367,7 @@ function evaluatePublication(input: PublicationHookInput, root: string, events: 
       identities.add(identity);
     }
     const current = events.filter(e => e.kind === 'use' && e.toolUseId === input.tool_use_id);
-    if (pendingRead ? input.tool_name !== 'Read' || events.some(e =>
+    if (pendingRead ? !['Read', 'Agent'].includes(input.tool_name) || events.some(e =>
       (e.kind === 'use' || e.kind === 'result') && e.toolUseId === input.tool_use_id) :
       current.length !== 1 || current[0]!.kind !== 'use' || current[0]!.name !== input.tool_name ||
         !isDeepStrictEqual(current[0]!.input, input.tool_input)) fail('Current native phase-entry identity is unavailable. Retry this phase-entry tool after the journal is available.');
@@ -463,7 +463,10 @@ export async function runPublicationHook(value: unknown, root: string): Promise<
       if (snapshot.transcript.status === 'ready') {
         if (snapshot.events.some(e => e.kind === 'use' && e.toolUseId === input.tool_use_id))
           return publicationHookOutput(evaluateAutoplanPublication(input, root, snapshot.events));
-        if (input.tool_name === 'Read' && evaluatePublication(input, root, snapshot.events, true).allow)
+        // Claude Code 2.1.x journals an Agent use only after PreToolUse returns,
+        // so Agent needs the same pending-identity path as a streamed Read. It
+        // still cannot enter a new phase (see the pendingRead rule above).
+        if (['Read', 'Agent'].includes(input.tool_name) && evaluatePublication(input, root, snapshot.events, true).allow)
           return {};
       }
       await new Promise(resolve => setTimeout(resolve, 50));

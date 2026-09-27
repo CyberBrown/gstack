@@ -1068,3 +1068,37 @@ describe('Autoplan authenticated phase consumption', () => {
   });
 
 });
+
+// Claude Code 2.1.x journals a parent Agent tool_use only after PreToolUse
+// returns, so the hook never sees the current Agent use. Like a streamed Read,
+// a pending Agent may act inside the proven phase but never enter a new one.
+describe('pending (unjournaled) Agent dispatch', () => {
+  function voiceSnapshot(f: ReturnType<typeof fixture>, phase: Phase, id: string) {
+    const skill = path.join(f.cwd, id, 'SKILL.md');
+    fs.mkdirSync(path.dirname(skill));
+    fs.writeFileSync(skill, `---\nname: plan-${phase === 'dx' ? 'devex' : phase}-review\n---\n## Review Sections\nApply every current review criterion.\n`);
+    const method = prepareMethodology(phase, skill, f.restore).methodologyPath;
+    f.use(id, 'Bash', { command: `bun "${ROOT}/bin/gstack-autoplan-snapshot.ts" create ${phase} "${f.active}" "${f.restore}" "${method}"` });
+    const snapshot = createSnapshot(phase, f.active, f.restore, method);
+    f.result(id, { content: JSON.stringify(snapshot) });
+    return snapshot;
+  }
+  test('a pending Agent dispatch inside the current phase is allowed', async () => {
+    const f = fixture();
+    const snap = voiceSnapshot(f, 'ceo', 'ceo-voice');
+    f.read('ceo-voice-json', path.join(path.dirname(snap.snapshotPath), 'snapshot.json'));
+    f.input.tool_name = 'Agent'; f.input.tool_use_id = 'pending-agent';
+    f.input.tool_input = { prompt: snap.nativeDispatchPrompt };
+    f.journal(); // the current Agent use is deliberately NOT journaled
+    expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});
+  });
+  test('a pending Agent dispatch cannot enter a later phase', async () => {
+    const f = fixture();
+    const snap = voiceSnapshot(f, 'design', 'design-voice');
+    f.input.tool_name = 'Agent'; f.input.tool_use_id = 'pending-agent';
+    f.input.tool_input = { prompt: snap.nativeDispatchPrompt };
+    f.journal();
+    const output: any = await withNativeProjectDirectory(f.cwd, () => withPublicationClock(() => runPublicationHook(f.input, ROOT)));
+    expect(output.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+});
