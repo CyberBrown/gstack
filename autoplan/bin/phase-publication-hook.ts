@@ -421,10 +421,13 @@ function evaluatePublication(input: PublicationHookInput, root: string, events: 
     const pendingEntry = entered.some(e => e.kind === 'use' && candidate(e, input.cwd) &&
       !entered.some(r => r.kind === 'result' && r.toolUseId === e.toolUseId));
     if (pendingEntry) fail('A prior phase-entry tool is still pending. Retry after its native result before requesting another phase.');
-    // A streamed tool may reach PreToolUse before its journal record. The
-    // native input can revisit a phase already proven by prior owned ACKs;
-    // it cannot establish a phase, a publication, or a synthetic current use.
-    if (pendingRead && (!phase || number[target] > number[phase]))
+    // A streamed tool may reach PreToolUse before its journal record (Claude
+    // Code 2.1.x journals some uses only after PreToolUse returns). A pending
+    // entry gets no credit of its own: it may open a new phase only through the
+    // same requirePublication proof below (prior close packet Read + published
+    // announcement), and it can never supply a publication for a later check.
+    // It still cannot establish the first phase.
+    if (pendingRead && !phase)
       fail('Current native phase-entry identity is required before entering a new phase.');
     if (!phase) {
       if (target !== 'ceo') fail('Read the current Phase 1 CEO entry successfully before entering a later phase.');
@@ -466,7 +469,11 @@ export async function runPublicationHook(value: unknown, root: string): Promise<
         // Claude Code 2.1.x journals an Agent use only after PreToolUse returns,
         // so Agent needs the same pending-identity path as a streamed Read. It
         // still cannot enter a new phase (see the pendingRead rule above).
-        if (['Read', 'Agent'].includes(input.tool_name) && evaluatePublication(input, root, snapshot.events, true).allow)
+        // Pending means absent: a raw record naming this id that the owned
+        // reader rejected (sidechain, foreign, dangling, truncated) is not pending.
+        if (['Read', 'Agent'].includes(input.tool_name) &&
+            !fs.readFileSync(input.transcript_path, 'utf8').includes(JSON.stringify(input.tool_use_id)) &&
+            evaluatePublication(input, root, snapshot.events, true).allow)
           return {};
       }
       await new Promise(resolve => setTimeout(resolve, 50));

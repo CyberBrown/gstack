@@ -712,11 +712,24 @@ describe('Autoplan parent publication guard', () => {
     expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});
     expect(readOwnedClaudePublicTranscript(f.input.transcript_path, f.cwd, f.sessionId)).toEqual(before);
   });
+  // Claude Code 2.1.x can journal a phase-entry Read after PreToolUse; a pending
+  // entry may open the next phase only through the published predecessor.
+  test('an in-flight Read enters the next phase once the predecessor is published', async () => {
+    const f = fixture(); f.message();
+    f.input.tool_input = { file_path: path.join(ROOT, 'autoplan/sections/design-phase.md') }; f.journal();
+    expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});
+  });
+  test('an in-flight Read cannot enter the next phase before the predecessor is published', async () => {
+    const f = fixture();
+    f.input.tool_input = { file_path: path.join(ROOT, 'autoplan/sections/design-phase.md') }; f.journal();
+    const output: any = await withNativeProjectDirectory(f.cwd, () => withPublicationClock(() => runPublicationHook(f.input, ROOT)));
+    expect(output.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
   test('an in-flight Read can revisit an earlier established phase', async () => {
     const f = fixture('design', 'ceo'); f.journal();
     expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});
   });
-  for (const kind of ['initial-entry', 'new-phase', 'agent', 'foreign-methodology', 'duplicate',
+  for (const kind of ['initial-entry', 'agent', 'foreign-methodology', 'duplicate',
     'foreign-session', 'orphan-current-result', 'pending-prior-entry', 'unpublished-predecessor', 'rearmed-human',
     'forged-prior-range', 'malformed-journal', 'symlinked-journal'] as const)
     test.serial(`an in-flight native Read does not bypass ${kind}`, async () => {
