@@ -22,10 +22,11 @@ _gstack_codex_auth_probe() {
   local _codex_home="${CODEX_HOME:-$HOME/.codex}"
   # Use `-n` which returns true only for non-empty non-whitespace. Bash's [ -n ]
   # alone allows whitespace; pair with a whitespace strip for robustness.
-  local _k1 _k2
+  local _k1 _k2 _k3
   _k1=$(printf '%s' "${CODEX_API_KEY:-}" | tr -d '[:space:]')
   _k2=$(printf '%s' "${OPENAI_API_KEY:-}" | tr -d '[:space:]')
-  if [ -n "$_k1" ] || [ -n "$_k2" ] || [ -f "$_codex_home/auth.json" ]; then
+  _k3=$(printf '%s' "${GSTACK_LLM_API_KEY:-}" | tr -d '[:space:]')
+  if [ -n "$_k1" ] || [ -n "$_k2" ] || [ -n "$_k3" ] || [ -f "$_codex_home/auth.json" ]; then
     echo "AUTH_OK"
     return 0
   fi

@@ -1083,12 +1083,25 @@ if ! command -v codex >/dev/null 2>&1; then
   _CODEX_AVAILABLE=false
 elif ! _gstack_codex_auth_probe >/dev/null; then
   _gstack_codex_log_event "codex_auth_failed"
-  echo "[codex-unavailable: auth missing] — proceeding with Claude subagent only. Run \`codex login\` or set \$CODEX_API_KEY to enable dual-voice review."
+  echo "[codex-unavailable: auth missing] — proceeding with Claude subagent only. Run \`codex login\`, set \$CODEX_API_KEY, or set \$GSTACK_LLM_API_KEY with a \`gstack\` codex profile to enable dual-voice review."
   _CODEX_AVAILABLE=false
 else
   _gstack_codex_version_check   # non-blocking warn if known-bad
   _CODEX_AVAILABLE=true
+  # LiteLLM second opinion: route Codex through the `gstack` profile
+  # (LiteLLM gateway, non-OpenAI model) when the key + profile exist.
+  # Falls back to default Codex auth otherwise.
+  _GSTACK_LLM_KEY_TRIMMED=$(printf '%s' "${GSTACK_LLM_API_KEY:-}" | tr -d '[:space:]')
+  if [ -n "$_GSTACK_LLM_KEY_TRIMMED" ] && [ -f "${CODEX_HOME:-$HOME/.codex}/gstack.config.toml" ]; then
+    _CODEX_PROFILE_ARGS="-p gstack"
+    _CODEX_SEARCH_ARGS=""   # custom providers ignore the CLI search flag; set web_search in the profile instead
+  else
+    _CODEX_PROFILE_ARGS=""
+    _CODEX_SEARCH_ARGS="--enable web_search_cached"
+  fi
 fi
+# NOTE: $_CODEX_PROFILE_ARGS / $_CODEX_SEARCH_ARGS are intentionally unquoted
+# at the `codex exec` call sites below so an empty value expands to nothing.
 ```
 
 If `_CODEX_AVAILABLE=false`, all Phase 1-3.5 Codex voices below degrade to
@@ -1120,7 +1133,7 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   **Codex CEO voice** (via Bash):
   ```bash
   _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _gstack_codex_timeout_wrapper 600 codex exec "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
 
   You are a CEO/founder advisor reviewing a development plan.
   Challenge the strategic foundations: Are the premises valid or assumed? Is this the
@@ -1128,7 +1141,7 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   What alternatives were dismissed too quickly? What competitive or market risks are
   unaddressed? What scope decisions will look foolish in 6 months? Be adversarial.
   No compliments. Just the strategic blind spots.
-  File: <plan_path>" -C "$_REPO_ROOT" -s read-only --enable web_search_cached < /dev/null
+  File: <plan_path>" -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
   _CODEX_EXIT=$?
   if [ "$_CODEX_EXIT" = "124" ]; then
     _gstack_codex_log_event "codex_timeout" "600"
@@ -1237,7 +1250,7 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   **Codex design voice** (via Bash):
   ```bash
   _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _gstack_codex_timeout_wrapper 600 codex exec "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
 
   Read the plan file at <plan_path>. Evaluate this plan's
   UI/UX design decisions.
@@ -1251,7 +1264,7 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   accessibility requirements (keyboard nav, contrast, touch targets) specified or
   aspirational? Does the plan describe specific UI decisions or generic patterns?
   What design decisions will haunt the implementer if left ambiguous?
-  Be opinionated. No hedging." -C "$_REPO_ROOT" -s read-only --enable web_search_cached < /dev/null
+  Be opinionated. No hedging." -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
   _CODEX_EXIT=$?
   if [ "$_CODEX_EXIT" = "124" ]; then
     _gstack_codex_log_event "codex_timeout" "600"
@@ -1318,7 +1331,7 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   **Codex eng voice** (via Bash):
   ```bash
   _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _gstack_codex_timeout_wrapper 600 codex exec "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
 
   Review this plan for architectural issues, missing edge cases,
   and hidden complexity. Be adversarial.
@@ -1327,7 +1340,7 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   CEO: <insert CEO consensus table summary — key concerns, DISAGREEs>
   Design: <insert Design consensus table summary, or 'skipped, no UI scope'>
 
-  File: <plan_path>" -C "$_REPO_ROOT" -s read-only --enable web_search_cached < /dev/null
+  File: <plan_path>" -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
   _CODEX_EXIT=$?
   if [ "$_CODEX_EXIT" = "124" ]; then
     _gstack_codex_log_event "codex_timeout" "600"
@@ -1439,7 +1452,7 @@ Log: "Phase 3.5 skipped — no developer-facing scope detected."
   **Codex DX voice** (via Bash):
   ```bash
   _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _gstack_codex_timeout_wrapper 600 codex exec "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
 
   Read the plan file at <plan_path>. Evaluate this plan's developer experience.
 
@@ -1453,7 +1466,7 @@ Log: "Phase 3.5 skipped — no developer-facing scope detected."
   3. API/CLI design: are names guessable? Are defaults sensible? Is it consistent?
   4. Docs: can a dev find what they need in under 2 minutes? Are examples copy-paste-complete?
   5. Upgrade path: can devs upgrade without fear? Migration guides? Deprecation warnings?
-  Be adversarial. Think like a developer who is evaluating this against 3 competitors." -C "$_REPO_ROOT" -s read-only --enable web_search_cached < /dev/null
+  Be adversarial. Think like a developer who is evaluating this against 3 competitors." -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
   _CODEX_EXIT=$?
   if [ "$_CODEX_EXIT" = "124" ]; then
     _gstack_codex_log_event "codex_timeout" "600"
