@@ -10,7 +10,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-// E2E for /autoplan's dual-voice (Claude subagent + Codex). Periodic tier:
+// E2E for /autoplan's dual-voice (Claude subagent + outside voice: Codex or
+// Hermes, selected via GSTACK_OUTSIDE_VOICE / gstack-config outside_voice).
 // non-deterministic, costs ~$1/run, not a gate. The purpose is to catch
 // regressions where one of the two voices fails silently post-hardening.
 
@@ -84,7 +85,7 @@ Add a new /greet skill that prints a welcome message.
 
       // Accept EITHER outcome as success:
       //   (a) Both voices produced output (ideal case)
-      //   (b) Codex unavailable + Claude voice produced output (graceful degrade)
+      //   (b) Outside voice unavailable + Claude voice produced output (graceful degrade)
       // Search ONLY the tool-call structure — NOT the prompt string that went in.
       // Matching against full transcript is risky because the prompt itself
       // contains "plan-ceo-review" and other marker strings that would produce
@@ -102,15 +103,15 @@ Add a new /greet skill that prints a welcome message.
       // Task/Agent tool_use entries have name:"Agent" or subagent_type:"..."
       const claudeVoiceFired = /"name":\s*"Agent"|"subagent_type":\s*"[^"]/.test(out) ||
                                /Claude\s+(CEO|subagent)\s+(review|complete|finished)|claude-subagent\s/i.test(out);
-      // Codex voice: require evidence of codex CLI invocation (command string in
-      // a Bash tool_use), not prompt-text mentions.
-      const codexVoiceFired = /"command":\s*"[^"]*codex\s+(exec|review)/.test(out) ||
-                              /CODEX SAYS\s*\(/i.test(out);
+      // Outside voice: require evidence of a codex or hermes CLI invocation
+      // (command string in a Bash tool_use), not prompt-text mentions.
+      const outsideVoiceFired = /"command":\s*"[^"]*(codex\s+(exec|review)|hermes\s[^"]*(-z|--oneshot))/.test(out) ||
+                                /(CODEX|HERMES) SAYS\s*\(/i.test(out);
       // Unavailable markers: explicit probe-failure strings emitted by the skill.
-      const codexUnavailable = /\[codex-unavailable\]|AUTH_FAILED\b|CODEX_NOT_AVAILABLE\b|codex_cli_missing|Codex CLI not found/i.test(out);
+      const outsideUnavailable = /\[(codex|hermes)-unavailable\]|AUTH_FAILED\b|PROFILE_MISSING\b|CODEX_NOT_AVAILABLE\b|(codex|hermes)_cli_missing|Codex CLI not found|hermes.*binary not found/i.test(out);
 
       expect(claudeVoiceFired).toBe(true);
-      expect(codexVoiceFired || codexUnavailable).toBe(true);
+      expect(outsideVoiceFired || outsideUnavailable).toBe(true);
 
       // Hang protection: require phase completion evidence, not name mentions.
       // "Phase 1 complete" or a phase-transition marker, not "plan-ceo-review"
@@ -120,7 +121,7 @@ Add a new /greet skill that prints a welcome message.
 
       logCost('autoplan-dual-voice', result);
       recordE2E(evalCollector, 'autoplan-dual-voice', 'Autoplan dual-voice E2E', result, {
-        passed: claudeVoiceFired && (codexVoiceFired || codexUnavailable) && reachedPhase1,
+        passed: claudeVoiceFired && (outsideVoiceFired || outsideUnavailable) && reachedPhase1,
       });
     },
     330_000, // per-test timeout slightly > spawn timeout so cleanup can run

@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# gstack-hermes-probe: shared helper for /autoplan's Hermes outside voice.
+# Sourced from template bash blocks; never execute directly.
+#
+# Functions (all prefixed with _gstack_hermes_ for namespace hygiene):
+#   _gstack_hermes_auth_probe      — multi-signal auth check (profile + key)
+#   _gstack_hermes_voice_ok        — post-run success check via --usage-file
+#   _gstack_hermes_timeout_wrapper — gtimeout -> timeout -> unwrapped fallback
+#   _gstack_hermes_log_event       — telemetry emission to ~/.gstack/analytics/
+#   _gstack_hermes_log_hang        — learnings log on timeout
+#
+# Hygiene rules (enforced by test/hermes-hardening.test.ts):
+#   - Never set -e / set -u / trap / IFS= / PATH= in this file.
+#   - All internal vars prefix with _GSTACK_HERMES_ (or are locals).
+#   - All functions prefix with _gstack_hermes.
+#   - No command execution at source time (only function defs).
+#
+# Reviewer profile setup (one-time, on the host running the skill). The
+# profile is a stripped-down Hermes: LiteLLM gateway model, file toolset
+# only, no bundled skills — an outside voice, not a general agent:
+#
+#   hermes profile create gstack-reviewer --no-skills --no-alias \
+#     --description "Adversarial outside-voice reviewer for gstack /autoplan"
+#   hermes --profile gstack-reviewer config set model.default pro
+#   hermes --profile gstack-reviewer config set model.provider custom
+#   hermes --profile gstack-reviewer config set model.base_url <gateway>/v1
+#   hermes --profile gstack-reviewer config set model.context_length 262144
+#   hermes --profile gstack-reviewer config set model.api_key '${GSTACK_LLM_API_KEY}'
+#   hermes --profile gstack-reviewer config set agent.max_turns 40
+#   hermes --profile gstack-reviewer config set agent.environment_probe false
+#   hermes --profile gstack-reviewer tools disable web browser terminal \
+#     code_execution vision image_gen video_gen tts skills todo memory \
+#     session_search clarify delegation cronjob computer_use
+#
+# Then select it: gstack-config set outside_voice hermes
+# (or GSTACK_OUTSIDE_VOICE=hermes; GSTACK_HERMES_PROFILE overrides the name).
+
+# --- Auth probe -------------------------------------------------------------
+
+_gstack_hermes_auth_probe() {
+  # Multi-signal: the reviewer profile exists AND its API key resolves.
+  # The profile's model.api_key is either a literal or an env reference
+  # (${GSTACK_LLM_API_KEY} for gstack-reviewer — the same LiteLLM gateway
+  # key the codex `gstack` profile uses). The referenced var counts when
+  # set in the shell env or in the profile's own .env. Avoids a live API
+  # ping in preflight (mirrors gstack-codex-probe's signal-only design).
+  local _profile="${1:-gstack-reviewer}"
+  local _profiles_dir="${GSTACK_HERMES_PROFILES_DIR:-$HOME/.hermes/profiles}"
+  local _pdir="$_profiles_dir/$_profile"
+  if [ ! -f "$_pdir/config.yaml" ]; then
+    echo "PROFILE_MISSING"
+    return 1
+  fi
+  local _raw
+  _raw=$(grep -E '^[[:space:]]*api_key:' "$_pdir/config.yaml" 2>/dev/null | head -1 | sed -E 's/^[[:space:]]*api_key:[[:space:]]*//; s/[[:space:]]*$//; s/^"//; s/"$//')
+  case "$_raw" in
+    "\${"*"}")
+      local _var _val
+      _var=$(printf '%s' "$_raw" | sed -E 's/^\$\{(.*)\}$/\1/')
+      _val=$(printf '%s' "${!_var:-}" | tr -d '[:space:]')
+      if [ -n "$_val" ] || grep -Eq "^$_var=.+" "$_pdir/.env" 2>/dev/null; then
+        echo "AUTH_OK"
+        return 0
+      fi
+      ;;
+    "")
+      # No api_key in the profile config: Hermes may still resolve a
+      # provider key from its own env handling. Fall back to the gateway
+      # key signal or any non-empty assignment in the profile .env.
+      local _gk
+      _gk=$(printf '%s' "${GSTACK_LLM_API_KEY:-}" | tr -d '[:space:]')
+      if [ -n "$_gk" ] || grep -Eq '^[A-Za-z_][A-Za-z0-9_]*=.+' "$_pdir/.env" 2>/dev/null; then
+        echo "AUTH_OK"
+        return 0
+      fi
+      ;;
+    *)
+      echo "AUTH_OK"
+      return 0
+      ;;
+  esac
+  echo "AUTH_FAILED"
+  return 1
+}
+
+# --- Post-run success check -------------------------------------------------
+
+_gstack_hermes_voice_ok() {
+  # `hermes -z` exits 0 even when the API rejects the call — the error text
+  # is printed to stdout as if it were the answer (verified on Hermes
+  # 0.20.5: a 401/403 produced exit 0 + error text). The --usage-file JSON
+  # is the only reliable success signal: require failed=false AND
+  # completed=true. Anything else (missing file, partial write) = failure.
+  local _usage="$1"
+  [ -n "$_usage" ] && [ -f "$_usage" ] || return 1
+  grep -Eq '"failed"[[:space:]]*:[[:space:]]*false' "$_usage" || return 1
+  grep -Eq '"completed"[[:space:]]*:[[:space:]]*true' "$_usage" || return 1
+  return 0
+}
+
+# --- Timeout wrapper --------------------------------------------------------
+
+_gstack_hermes_timeout_wrapper() {
+  # Resolve wrapper binary: prefer gtimeout (Homebrew coreutils on macOS),
+  # fall back to timeout (Linux), else run unwrapped. Arguments: $1 is the
+  # duration in seconds; rest is the command to run.
+  local _duration="$1"
+  shift
+  local _to
+  _to=$(command -v gtimeout 2>/dev/null || command -v timeout 2>/dev/null || echo "")
+  if [ -n "$_to" ]; then
+    "$_to" "$_duration" "$@"
+  else
+    "$@"
+  fi
+}
+
+# --- Telemetry event --------------------------------------------------------
+
+_gstack_hermes_log_event() {
+  # Emit a telemetry event to ~/.gstack/analytics/skill-usage.jsonl.
+  # Gated on $_TEL != "off" (caller sets this from gstack-config).
+  # Event types: hermes_timeout, hermes_auth_failed, hermes_cli_missing,
+  #              hermes_profile_missing, hermes_voice_failed.
+  # Payload schema: {skill, event, duration_s, ts}. NEVER includes prompt
+  # content, env var values, or auth tokens.
+  local _event="$1"
+  local _duration="${2:-0}"
+  [ "${_TEL:-off}" = "off" ] && return 0
+  mkdir -p "$HOME/.gstack/analytics" 2>/dev/null || return 0
+  local _ts
+  _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+  printf '{"skill":"hermes","event":"%s","duration_s":"%s","ts":"%s"}\n' \
+    "$_event" "$_duration" "$_ts" \
+    >> "$HOME/.gstack/analytics/skill-usage.jsonl" 2>/dev/null || true
+}
+
+# --- Learnings log on hang --------------------------------------------------
+
+_gstack_hermes_log_hang() {
+  # Invoked when a hermes invocation times out (exit 124). Records an
+  # operational learning so future /investigate sessions surface the pattern.
+  # Best-effort: errors swallowed.
+  local _mode="${1:-unknown}"
+  local _prompt_size="${2:-0}"
+  local _log_bin="$HOME/.claude/skills/gstack/bin/gstack-learnings-log"
+  [ -x "$_log_bin" ] || return 0
+  local _key="hermes-hang-$(date +%s 2>/dev/null || echo unknown)"
+  "$_log_bin" "$(printf '{"skill":"hermes","type":"operational","key":"%s","insight":"Hermes timed out after 600s during [%s] invocation. Prompt size: %s. Consider splitting prompt or checking network.","confidence":8,"source":"observed","files":["autoplan/SKILL.md.tmpl","bin/gstack-hermes-probe"]}' "$_key" "$_mode" "$_prompt_size")" \
+    >/dev/null 2>&1 || true
+}

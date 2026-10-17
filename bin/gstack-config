@@ -75,6 +75,12 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 #
 # ─── Advanced ────────────────────────────────────────────────────────
 # codex_reviews: enabled    # disabled = skip Codex adversarial reviews in /ship
+# outside_voice: codex      # codex | hermes — /autoplan dual-voice engine.
+#                           # hermes = Hermes reviewer profile instead of
+#                           # Codex (env GSTACK_OUTSIDE_VOICE wins)
+# hermes_profile: gstack-reviewer
+#                           # Hermes profile for the outside voice
+#                           # (env GSTACK_HERMES_PROFILE wins)
 # gstack_contributor: false # true = file field reports when gstack misbehaves
 # skip_eng_review: false    # true = skip eng review gate in /ship (not recommended)
 #
@@ -101,6 +107,8 @@ lookup_default() {
     checkpoint_mode) echo "explicit" ;;
     checkpoint_push) echo "false" ;;
     codex_reviews) echo "enabled" ;;
+    outside_voice) echo "codex" ;;
+    hermes_profile) echo "gstack-reviewer" ;;
     gstack_contributor) echo "false" ;;
     skip_eng_review) echo "false" ;;
     workspace_root) echo "$HOME/conductor/workspaces" ;;
@@ -142,6 +150,10 @@ case "${1:-}" in
       echo "Warning: artifacts_sync_mode '$VALUE' not recognized. Valid values: off, artifacts-only, full. Using off." >&2
       VALUE="off"
     fi
+    if [ "$KEY" = "outside_voice" ] && [ "$VALUE" != "codex" ] && [ "$VALUE" != "hermes" ]; then
+      echo "Warning: outside_voice '$VALUE' not recognized. Valid values: codex, hermes. Using codex." >&2
+      VALUE="codex"
+    fi
     mkdir -p "$STATE_DIR"
     # Write annotated header on first creation
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -170,6 +182,7 @@ case "${1:-}" in
     echo "# ─── Active values (including defaults for unset keys) ───"
     for KEY in proactive routing_declined telemetry auto_upgrade update_check \
                skill_prefix checkpoint_mode checkpoint_push codex_reviews \
+               outside_voice hermes_profile \
                gstack_contributor skip_eng_review workspace_root \
                artifacts_sync_mode artifacts_sync_mode_prompted; do
       VALUE=$(grep -E "^${KEY}:" "$CONFIG_FILE" 2>/dev/null | tail -1 | awk '{print $2}' | tr -d '[:space:]' || true)
@@ -186,6 +199,7 @@ case "${1:-}" in
     echo "# gstack-config defaults"
     for KEY in proactive routing_declined telemetry auto_upgrade update_check \
                skill_prefix checkpoint_mode checkpoint_push codex_reviews \
+               outside_voice hermes_profile \
                gstack_contributor skip_eng_review workspace_root \
                artifacts_sync_mode artifacts_sync_mode_prompted; do
       printf '  %-24s %s\n' "$KEY:" "$(lookup_default "$KEY")"

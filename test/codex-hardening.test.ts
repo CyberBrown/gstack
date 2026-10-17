@@ -78,6 +78,36 @@ describe('gstack-codex-probe: auth probe', () => {
     }
   });
 
+  test('GSTACK_LLM_API_KEY set → AUTH_OK (LiteLLM profile path)', () => {
+    const home = tempHome();
+    try {
+      const r = runProbe({
+        snippet: '_gstack_codex_auth_probe',
+        env: { GSTACK_LLM_API_KEY: 'sk-litellm-test' },
+        home,
+      });
+      expect(r.stdout.trim()).toBe('AUTH_OK');
+      expect(r.status).toBe(0);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('whitespace-only GSTACK_LLM_API_KEY + no file → AUTH_FAILED', () => {
+    const home = tempHome();
+    try {
+      const r = runProbe({
+        snippet: '_gstack_codex_auth_probe',
+        env: { GSTACK_LLM_API_KEY: '   ' },
+        home,
+      });
+      expect(r.stdout.trim()).toBe('AUTH_FAILED');
+      expect(r.status).toBe(1);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('${CODEX_HOME:-~/.codex}/auth.json exists → AUTH_OK', () => {
     const home = tempHome();
     try {
