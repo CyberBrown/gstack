@@ -207,3 +207,72 @@ describe('autoplan: no model-written text in shell source (SEC-03 tripwire)', ()
     });
   }
 });
+
+describe('outside-voice repo trust gate (SEC-06)', () => {
+  function trust(root: string, list: string, home = '/home/u') {
+    return run(`_gstack_outside_trust_check '${root}' '${list}'`, { HOME: home });
+  }
+
+  test('empty deny list allows everything', () => {
+    const r = trust('/home/u/projects/52L/app', '');
+    expect(r.stdout.trim()).toBe('TRUST_OK');
+    expect(r.status).toBe(0);
+  });
+
+  test('~/ glob denies a repo under it', () => {
+    const r = trust('/home/u/projects/52L/app', '~/projects/52L/*');
+    expect(r.stdout.trim()).toBe('TRUST_DENIED:~/projects/52L/*');
+    expect(r.status).toBe(1);
+  });
+
+  test('plain directory pattern denies the dir itself and anything below', () => {
+    expect(trust('/srv/clients', '/srv/clients').status).toBe(1);
+    expect(trust('/srv/clients/acme/repo', '/srv/clients/').status).toBe(1);
+    expect(trust('/srv/clients-other', '/srv/clients').status).toBe(0);
+  });
+
+  test('second entry of a colon list matches; non-matching repo passes', () => {
+    expect(trust('/home/u/clients/acme', '~/projects/52L/*:~/clients/*').stdout.trim()).toBe(
+      'TRUST_DENIED:~/clients/*',
+    );
+    expect(trust('/home/u/projects/gstack', '~/projects/52L/*:~/clients/*').stdout.trim()).toBe('TRUST_OK');
+  });
+
+  test('symlinked repo path is checked in its resolved form too', () => {
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-trust-')));
+    try {
+      const real = path.join(base, 'clients', 'acme');
+      fs.mkdirSync(real, { recursive: true });
+      const link = path.join(base, 'link');
+      fs.symlinkSync(real, link);
+      const r = trust(link, `${base}/clients/*`);
+      expect(r.status).toBe(1);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('gstack-config knows the key and defaults it to empty', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-trust-home-'));
+    try {
+      const cfg = path.join(ROOT, 'bin', 'gstack-config');
+      const env = { PATH: process.env.PATH ?? '', HOME: home, GSTACK_HOME: path.join(home, '.gstack') };
+      const get = spawnSync(cfg, ['get', 'outside_voice_trust_deny'], { env });
+      expect(get.stdout.toString()).toBe('');
+      spawnSync(cfg, ['set', 'outside_voice_trust_deny', '~/projects/52L/*:~/clients/*'], { env });
+      const get2 = spawnSync(cfg, ['get', 'outside_voice_trust_deny'], { env });
+      expect(get2.stdout.toString()).toBe('~/projects/52L/*:~/clients/*');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('autoplan preflight wires the gate before any voice is probed', () => {
+    const md = fs.readFileSync(path.join(ROOT, 'autoplan', 'SKILL.md.tmpl'), 'utf-8');
+    const gate = md.indexOf('_gstack_outside_trust_check "$_TRUST_ROOT" "$_TRUST_DENY"');
+    const probe = md.indexOf('source ~/.claude/skills/gstack/bin/gstack-hermes-probe');
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(probe);
+    expect(md).toContain('[outside-voice-skipped: repo trust policy]');
+  });
+});

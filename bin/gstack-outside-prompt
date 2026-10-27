@@ -15,6 +15,8 @@
 #   _gstack_outside_prompt_read     — validate a path from _new and print the
 #                                     file's contents (exit 1 on anything else)
 #   _gstack_outside_prompt_cleanup  — remove the private dir created by _new
+#   _gstack_outside_trust_check     — repo trust gate: is this repo allowed to
+#                                     send code/plans to an outside voice?
 #
 # Hygiene rules (enforced by test/outside-prompt.test.ts):
 #   - Never set -e / set -u / trap / IFS= / PATH= in this file.
@@ -74,4 +76,42 @@ _gstack_outside_prompt_cleanup() {
   local _f="$1"
   _gstack_outside_prompt_valid "$_f" || return 0
   rm -rf -- "${_f%/prompt}"
+}
+
+_gstack_outside_trust_check() {
+  # Usage: _gstack_outside_trust_check <repo_root> <deny_list>
+  # deny_list = colon-separated path globs (gstack-config key
+  # outside_voice_trust_deny), e.g. "~/projects/52L/*:~/clients/*". A leading
+  # "~/" means $HOME. A repo whose root equals a pattern or sits under it is
+  # denied. Prints TRUST_OK, or TRUST_DENIED:<pattern> and returns 1.
+  # An empty list allows everything (the decision of what to deny is the
+  # user's; there is no built-in deny list).
+  local _root="$1" _list="$2" _p _pat _real
+  [ -n "$_root" ] || { echo "TRUST_OK"; return 0; }
+  _root="${_root%/}"
+  # Check both the path as given and its symlink-free form.
+  _real=$(cd "$_root" 2>/dev/null && pwd -P) || _real="$_root"
+  local _rest="$_list"
+  while [ -n "$_rest" ]; do
+    _p="${_rest%%:*}"
+    if [ "$_p" = "$_rest" ]; then _rest=""; else _rest="${_rest#*:}"; fi
+    [ -n "$_p" ] || continue
+    case "$_p" in
+      "~/"*) _pat="$HOME/${_p#\~/}" ;;
+      "~") _pat="$HOME" ;;
+      *) _pat="$_p" ;;
+    esac
+    _pat="${_pat%/}"
+    # Unquoted $_pat on purpose: it is a glob pattern.
+    # shellcheck disable=SC2254
+    case "$_root" in
+      $_pat|$_pat/*) echo "TRUST_DENIED:$_p"; return 1 ;;
+    esac
+    # shellcheck disable=SC2254
+    case "$_real" in
+      $_pat|$_pat/*) echo "TRUST_DENIED:$_p"; return 1 ;;
+    esac
+  done
+  echo "TRUST_OK"
+  return 0
 }
