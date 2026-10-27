@@ -1079,13 +1079,30 @@ Hermes ran, label its output `HERMES SAYS`, head its consensus-table column
 says `[codex-only]` / `[codex-unavailable]`, and record the review-log SOURCE
 as `hermes+subagent` / `hermes-only` accordingly.
 
+**Repo trust gate:** `gstack-config get outside_voice_trust_deny` is a
+colon-separated list of path globs. If this repo sits under one of them, the
+preflight prints `[outside-voice-skipped: repo trust policy]`: skip every
+outside-voice block below (do not even create prompt files), tag the outside
+voice `[outside-voice-skipped: repo trust policy]` in each phase, and run the
+Claude subagent only.
+
 ```bash
 _TEL=$(~/.claude/skills/gstack/bin/gstack-config get telemetry 2>/dev/null || echo off)
 _OUTSIDE_VOICE="${GSTACK_OUTSIDE_VOICE:-$(~/.claude/skills/gstack/bin/gstack-config get outside_voice 2>/dev/null || echo codex)}"
 case "$_OUTSIDE_VOICE" in hermes|codex) ;; *) _OUTSIDE_VOICE=codex ;; esac
+source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+_TRUST_DENY=$(~/.claude/skills/gstack/bin/gstack-config get outside_voice_trust_deny 2>/dev/null || true)
+_TRUST_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+if ! _gstack_outside_trust_check "$_TRUST_ROOT" "$_TRUST_DENY" >/dev/null; then
+  echo "[outside-voice-skipped: repo trust policy] — $_TRUST_ROOT matches outside_voice_trust_deny; proceeding with Claude subagent only"
+  _OUTSIDE_VOICE=none
+fi
 echo "OUTSIDE_VOICE: $_OUTSIDE_VOICE"
 
-if [ "$_OUTSIDE_VOICE" = "hermes" ]; then
+if [ "$_OUTSIDE_VOICE" = "none" ]; then
+  _CODEX_AVAILABLE=false
+  _HERMES_AVAILABLE=false
+elif [ "$_OUTSIDE_VOICE" = "hermes" ]; then
   source ~/.claude/skills/gstack/bin/gstack-hermes-probe
   _HERMES_PROFILE="${GSTACK_HERMES_PROFILE:-$(~/.claude/skills/gstack/bin/gstack-config get hermes_profile 2>/dev/null || echo gstack-reviewer)}"
   [ -n "$_HERMES_PROFILE" ] || _HERMES_PROFILE=gstack-reviewer

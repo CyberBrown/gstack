@@ -27,6 +27,8 @@ Fork point: upstream `40e34de` (v1.35.0.0, 2026-05-14).
 | f2964eb, 4815a67 | Hermes as an alternative outside voice for `/autoplan` | `bin/gstack-hermes-probe`, `bin/gstack-config`, `autoplan/SKILL.md.tmpl`, `test/hermes-hardening.test.ts` |
 | PR #5 | Outside-voice prompts travel via private files; Hermes tree-write guard | `bin/gstack-outside-prompt`, `bin/gstack-hermes-probe`, `autoplan/SKILL.md.tmpl`, `test/outside-prompt.test.ts` |
 | PR #6 | Fork manual, probe hardening (SEC-08, BUG-05) | `CLAUDE.md`, `AGENTS.md`, README, this file, `bin/gstack-*-probe` |
+| PR #7 | Fork CI, upstream-only workflow guards, SHA-pinned actions, `gstack-fork-sync` skill | `.github/workflows/*`, `setup`, `gstack-fork-sync/` |
+| PR #8 | `/autoplan` repo trust gate for outside voices | `bin/gstack-outside-prompt`, `bin/gstack-config`, `autoplan/SKILL.md.tmpl` |
 
 Fork commits on `fix/sessionstart-anchor` only (not yet on the default branch): 7e294e6
 (`-p gstack` on every Codex call), b9cabb3, ea7286a, 927cded, 57973f0 (SessionStart anchor and
@@ -46,6 +48,11 @@ conditional on the profile file when re-applying it.
   `hermes tools list` output, is in the header of `bin/gstack-hermes-probe`. The voice must be
   read-only: `/autoplan` fingerprints the working tree around every Hermes call and discards
   the voice if anything changed.
+- **Repo trust gate.** `gstack-config set outside_voice_trust_deny '~/projects/52L/*:~/clients/*'`
+  (colon-separated globs, no spaces) stops `/autoplan` from sending anything to Codex or Hermes
+  from a repo under those paths. Default: empty (allow all). Which paths to list is Chris's
+  decision (SEC-06). The gate covers `/autoplan` only; upstream skills (`/review`, `/ship`,
+  `/codex`, `/plan-*`) get it in the upstream consolidation.
 - **Prompts.** Outside-voice prompts are written to a private file (`bin/gstack-outside-prompt`)
   and passed as `"$_OUTSIDE_PROMPT"`. Never interpolate model-written text into shell source.
 
@@ -92,6 +99,7 @@ host. A history rewrite is not worth it; just don't repeat it.
 
 ## Fork changelog
 
+- 2026-10-27: `/autoplan` repo trust gate (`outside_voice_trust_deny`, SEC-06 mechanism).
 - 2026-10-27: prompt-file plumbing for outside voices + Hermes tree guard (PR #5); fork
   manual, `docs/FORK.md`, Hermes recipe update, probe hardening (SEC-08, BUG-05).
 - 2026-10-16: Hermes outside voice and LiteLLM Codex lane (PR #2).
