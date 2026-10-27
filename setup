@@ -324,13 +324,28 @@ if ! ensure_playwright_browser; then
     echo "Windows detected — verifying Node.js can load Playwright..."
     (
       cd "$SOURCE_GSTACK_DIR"
-      # Bun's node_modules already has playwright; verify Node can require it
-      node -e "require('playwright')" 2>/dev/null || npm install --no-save playwright
+      # Bun's node_modules already has playwright; verify Node can require it.
+      # Both packages are pinned in package.json + bun.lock: restore them from
+      # the lockfile, never with an unpinned `npm install` (SEC-01).
+      if ! node -e "require('playwright')" 2>/dev/null; then
+        bun install --frozen-lockfile || true
+        if ! node -e "require('playwright')" 2>/dev/null; then
+          echo "gstack setup failed: Node.js cannot load playwright from $SOURCE_GSTACK_DIR/node_modules" >&2
+          echo "  Run: cd \"$SOURCE_GSTACK_DIR\" && bun install --frozen-lockfile" >&2
+          exit 1
+        fi
+      fi
       # @ngrok/ngrok is externalized in server-node.mjs and resolved at runtime.
       # Verify the platform-specific native binary is installed so /pair-agent
       # tunnels don't fail later with a cryptic module-not-found error.
-      node -e "require('@ngrok/ngrok')" 2>/dev/null || npm install --no-save @ngrok/ngrok
-    )
+      if ! node -e "require('@ngrok/ngrok')" 2>/dev/null; then
+        bun install --frozen-lockfile || true
+        node -e "require('@ngrok/ngrok')" 2>/dev/null || {
+          echo "WARNING: Node.js cannot load @ngrok/ngrok; /pair-agent tunnels will not work." >&2
+          echo "  Run: cd \"$SOURCE_GSTACK_DIR\" && bun install --frozen-lockfile" >&2
+        }
+      fi
+    ) || exit 1
   fi
 fi
 

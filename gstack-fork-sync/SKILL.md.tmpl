@@ -1,0 +1,139 @@
+---
+name: gstack-fork-sync
+version: 0.1.0
+description: |
+  Sync the CyberBrown/gstack fork with upstream garrytan/gstack: fetch-only
+  upstream remote, rebase branch, upstream-diff supply-chain review, tests,
+  PR into the fork's default branch, tag, install verification. Use when
+  asked to "sync gstack with upstream", "update the gstack fork", "rebase
+  gstack onto upstream", or "pull upstream gstack". Fork maintainers only. (gstack)
+triggers:
+  - sync gstack fork with upstream
+  - rebase gstack fork onto upstream
+  - update the gstack fork
+allowed-tools:
+  - Bash
+  - Read
+  - Grep
+  - Glob
+  - AskUserQuestion
+sensitive: true
+---
+
+# /gstack-fork-sync — Sync the CyberBrown fork with upstream
+
+This skill is for the **CyberBrown/gstack** fork only. It never writes to
+upstream: `garrytan/gstack` is fetch-only. Never push, open PRs or issues, or
+comment there.
+
+Read `docs/FORK.md` in the fork checkout first. It lists the fork delta, the
+lane config and the installs. If it is missing, stop: this is not the fork.
+
+## Step 1: Work in a fresh clone, never in an install
+
+The installs listed in `docs/FORK.md` (Claude, Codex, Hermes, Muse) and the
+dev checkout are off limits. Clone fresh
+outside `/tmp` (it can be a small tmpfs):
+
+```bash
+_FORK_DIR="${GSTACK_FORK_DIR:-$HOME/.cache/gstack-fork-sync/gstack}"
+_BASE=chris/remove-unused-hosts
+if [ ! -d "$_FORK_DIR/.git" ]; then
+  mkdir -p "$(dirname "$_FORK_DIR")"
+  git clone --branch "$_BASE" git@github.com:CyberBrown/gstack.git "$_FORK_DIR"
+fi
+cd "$_FORK_DIR"
+git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/garrytan/gstack.git
+git remote set-url --push upstream DISABLED
+git remote -v
+git fetch origin --tags && git fetch upstream
+echo "BEHIND: $(git rev-list --count "origin/$_BASE..upstream/main")"
+echo "AHEAD:  $(git rev-list --count "upstream/main..origin/$_BASE")"
+```
+
+Confirm `origin` is CyberBrown/gstack and the `upstream` push URL is
+`DISABLED` before going on. If BEHIND is 0, report "already in sync" and stop.
+
+## Step 2: Build the sync branch
+
+```bash
+cd "${GSTACK_FORK_DIR:-$HOME/.cache/gstack-fork-sync/gstack}"
+_SYNC="sync/upstream-$(date +%Y-%m-%d)"
+git checkout -b "$_SYNC" "origin/chris/remove-unused-hosts"
+git rebase upstream/main
+```
+
+Resolve conflicts by keeping upstream's structure and re-applying the fork
+change on top. Keep the fork delta minimal and resolver-based (see
+`docs/FORK.md`). If a conflict needs a judgment call about fork behavior,
+ask the user with AskUserQuestion instead of guessing. Do not bump upstream
+VERSION/CHANGELOG for fork changes; add a line to the `docs/FORK.md` changelog.
+
+## Step 3: Upstream-diff supply-chain review (mandatory)
+
+Everything upstream added will run with the user's full rights the first
+time a skill or hook fires. Review the upstream range before merging:
+
+```bash
+cd "${GSTACK_FORK_DIR:-$HOME/.cache/gstack-fork-sync/gstack}"
+_RANGE="$(git merge-base origin/chris/remove-unused-hosts upstream/main)..upstream/main"
+echo "== new network hosts in bin/ lib/ browse/"
+git diff "$_RANGE" -- bin lib browse | grep -E '^\+' | grep -Eo 'https?://[A-Za-z0-9.-]+' | sort -u
+echo "== hook changes"
+git diff --stat "$_RANGE" -- 'hosts/*/hooks' 'hosts/claude/hooks'
+echo "== package.json scripts / overrides / dependencies"
+git diff "$_RANGE" -- package.json | grep -E '^[+-]' | grep -Ev '^(\+\+\+|---)'
+echo "== setup installers (curl, npm, npx, bunx, pip, brew)"
+git diff "$_RANGE" -- setup | grep -E '^\+' | grep -En 'curl |wget |npm |npx |bunx |pip |brew '
+echo "== telemetry fields"
+git diff "$_RANGE" -- 'bin/gstack-telemetry-*' | grep -E '^[+-]' | head -50
+```
+
+For each new host, hook, install step or telemetry field: say what it is, who
+receives data, and whether it is acceptable. Anything that adds egress, a hook,
+or an unpinned installer needs the user's explicit approval (AskUserQuestion)
+before the PR is opened. Do not silently accept it.
+
+## Step 4: Tests
+
+```bash
+cd "${GSTACK_FORK_DIR:-$HOME/.cache/gstack-fork-sync/gstack}"
+bun install --frozen-lockfile
+bun test test/hermes-hardening.test.ts test/codex-hardening.test.ts \
+  test/outside-prompt.test.ts test/host-config.test.ts \
+  test/gen-skill-docs.test.ts test/skill-collision-sentinel.test.ts
+bun run gen:skill-docs && git diff --exit-code -- '*.md'
+bun run test
+```
+
+Bun only, never npm. Compare failures in the full free suite against a clean
+`upstream/main` checkout. Only failures that also occur there may be called
+pre-existing.
+
+## Step 5: PR into the fork's default branch
+
+```bash
+cd "${GSTACK_FORK_DIR:-$HOME/.cache/gstack-fork-sync/gstack}"
+git push -u origin HEAD
+gh pr create --repo CyberBrown/gstack --base chris/remove-unused-hosts \
+  --title "Sync with upstream $(git describe --tags --always upstream/main)"
+```
+
+Always pass `--repo CyberBrown/gstack`. The PR body lists the upstream range,
+the supply-chain review results from Step 3, and the test results.
+
+## Step 6: Tag and install verification (after merge)
+
+After the user merges, tag the merge commit `fork-v<upstream VERSION>-<n>`
+and push the tag to `origin`. Moving the installs to the new tag is a
+separate, deliberate step (the install pin). Do it only when the user asks,
+following CLAUDE.md "Deploying to the active skill (fork-aware)". Then, for
+each install listed in `docs/FORK.md`, verify it runs the tag:
+
+```bash
+_INSTALL="<install path from docs/FORK.md>"
+echo "$_INSTALL: $(git -C "$_INSTALL" describe --tags --always) $(cat "$_INSTALL/VERSION" 2>/dev/null)"
+```
+
+Report: upstream range synced, supply-chain findings, test results, PR URL,
+and which installs still run an older revision.

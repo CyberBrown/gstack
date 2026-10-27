@@ -89,6 +89,7 @@ Invoke them by name (e.g., `/office-hours`).
 | `/guard` | Activate both careful + freeze at once. |
 | `/unfreeze` | Remove directory edit restrictions. |
 | `/make-pdf` | Turn any markdown file into a publication-quality PDF. |
+| `/gstack-fork-sync` | Fork only: sync CyberBrown/gstack with upstream (fetch-only), supply-chain review, PR, tag. |
 
 ## Build commands
 

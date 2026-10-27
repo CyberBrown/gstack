@@ -52,6 +52,7 @@ Detailed guides for every gstack skill — philosophy, workflow, and examples.
 | [`/open-gstack-browser`](#open-gstack-browser) | **GStack Browser** | Launch GStack Browser with sidebar, anti-bot stealth, auto model routing, cookie import, and Claude Code integration. Watch every action live. |
 | [`/setup-deploy`](#setup-deploy) | **Deploy Configurator** | One-time setup for `/land-and-deploy`. Detects your platform, production URL, and deploy commands. |
 | [`/gstack-upgrade`](#gstack-upgrade) | **Self-Updater** | Upgrade gstack to the latest version. Detects global vs vendored install, syncs both, shows what changed. |
+| [`/gstack-fork-sync`](../gstack-fork-sync/SKILL.md) | **Fork Sync** | CyberBrown fork only: sync with upstream garrytan/gstack via a fetch-only remote, review the upstream diff for new egress/hooks/installers, test, PR into the fork's default branch, tag. |
 | [`/make-pdf`](#make-pdf) | **PDF Generator** | Turn any markdown file into a publication-quality PDF. Proper margins, page numbers, cover pages, clickable TOC. |
 
 ---
