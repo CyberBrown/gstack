@@ -56,9 +56,25 @@ jobs:
     name: free suite (informational)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - run: bun install --frozen-lockfile
-      - run: bun run test
+      - name: Free suite (failures reported as a warning, not hidden)
+        shell: bash
+        run: |
+          set +e
+          bun run test 2>&1 | tee free-suite.log
+          rc=${PIPESTATUS[0]}
+          fails=$(grep -c '^(fail)' free-suite.log)
+          {
+            echo "### Free suite (informational)"
+            echo "exit code: $rc, failing tests: $fails"
+            echo '```'
+            grep '^(fail)' free-suite.log | sed 's/ \[.*//' | sort -u | head -100
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning title=free suite (informational)::$fails failing tests (exit $rc). Known upstream v1.35 and environment failures; not gating until the upstream consolidation (OPS-01). See the job summary."
+          fi
+          exit 0
