@@ -1,5 +1,19 @@
 # gstack
 
+> **This is Chris's fork of [garrytan/gstack](https://github.com/garrytan/gstack)**
+> (CyberBrown/gstack, default branch `chris/remove-unused-hosts`). It adds a Muse Code host,
+> drops unused hosts, and adds a LiteLLM Codex lane and a Hermes outside voice for
+> `/autoplan`. Install from this fork, not upstream:
+>
+> ```bash
+> git clone --branch chris/remove-unused-hosts https://github.com/CyberBrown/gstack.git ~/.claude/skills/gstack
+> cd ~/.claude/skills/gstack && git remote add upstream https://github.com/garrytan/gstack.git \
+>   && git remote set-url --push upstream DISABLED && ./setup
+> ```
+>
+> Fork delta, remotes, sync procedure, lane config and installs: [docs/FORK.md](docs/FORK.md).
+> Everything below is upstream's README.
+
 > "I don't think I've typed like a line of code probably since December, basically, which is an extremely large change." — [Andrej Karpathy](https://fortune.com/2026/03/21/andrej-karpathy-openai-cofounder-ai-agents-coding-state-of-psychosis-openclaw/), No Priors podcast, March 2026
 
 When I heard Karpathy say this, I wanted to find out how. How does one person ship like a team of twenty? Peter Steinberger built [OpenClaw](https://github.com/openclaw/openclaw) — 247K GitHub stars — essentially solo with AI agents. The revolution is here. A single builder with the right tooling can move faster than a traditional team.

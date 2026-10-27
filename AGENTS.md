@@ -4,6 +4,12 @@ gstack is a collection of SKILL.md files that give AI agents structured roles fo
 software development. Each skill is a specialist: CEO reviewer, eng manager,
 designer, QA lead, release engineer, debugger, and more.
 
+> **Fork note (CyberBrown/gstack).** This is Chris's fork of garrytan/gstack. Read the
+> "fork operating manual" at the top of `CLAUDE.md` before changing anything, and see
+> `docs/FORK.md` for the fork delta and sync procedure. Work goes by branch + PR into the
+> default branch `chris/remove-unused-hosts`. Never push, open PRs or comment on
+> garrytan/gstack, and never hard-reset an install to its `origin/main`.
+
 ## Available skills
 
 Skills live in `.agents/skills/` (or `~/.claude/skills/gstack/` on Claude Code).

@@ -31,7 +31,13 @@
 #   hermes --profile gstack-reviewer config set agent.environment_probe false
 #   hermes --profile gstack-reviewer tools disable web browser terminal \
 #     code_execution vision image_gen video_gen tts skills todo memory \
-#     session_search clarify delegation cronjob computer_use
+#     session_search clarify delegation cronjob computer_use kanban
+#
+# Expected result: `hermes --profile gstack-reviewer tools list` shows only
+# the `file` toolset enabled (every other toolset, kanban included, disabled).
+# `file` is not guaranteed read-only, so /autoplan also fingerprints the
+# working tree around each call (_gstack_hermes_tree_state) and discards the
+# voice if anything changed.
 #
 # Then select it: gstack-config set outside_voice hermes
 # (or GSTACK_OUTSIDE_VOICE=hermes; GSTACK_HERMES_PROFILE overrides the name).
@@ -58,8 +64,11 @@ _gstack_hermes_auth_probe() {
     "\${"*"}")
       local _var _val
       _var=$(printf '%s' "$_raw" | sed -E 's/^\$\{(.*)\}$/\1/')
+      # Only a plain variable name may reach ${!_var}: indirect expansion of
+      # something like a[$(cmd)] would execute cmd (SEC-08).
+      [[ "$_var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "AUTH_FAILED"; return 1; }
       _val=$(printf '%s' "${!_var:-}" | tr -d '[:space:]')
-      if [ -n "$_val" ] || grep -Eq "^$_var=.+" "$_pdir/.env" 2>/dev/null; then
+      if [ -n "$_val" ] || grep -Eq "^${_var}=.+" "$_pdir/.env" 2>/dev/null; then
         echo "AUTH_OK"
         return 0
       fi
