@@ -78,12 +78,49 @@ describe('gstack-codex-probe: auth probe', () => {
     }
   });
 
-  test('GSTACK_LLM_API_KEY set → AUTH_OK (LiteLLM profile path)', () => {
+  test('GSTACK_LLM_API_KEY set + gstack profile file → AUTH_OK (LiteLLM profile path)', () => {
+    const home = tempHome();
+    try {
+      fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.codex', 'gstack.config.toml'), 'model = "pro"\n');
+      const r = runProbe({
+        snippet: '_gstack_codex_auth_probe',
+        env: { GSTACK_LLM_API_KEY: 'sk-litellm-test' },
+        home,
+      });
+      expect(r.stdout.trim()).toBe('AUTH_OK');
+      expect(r.status).toBe(0);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('GSTACK_LLM_API_KEY set but no gstack profile file → AUTH_FAILED (BUG-05)', () => {
+    // Without ~/.codex/gstack.config.toml autoplan uses the default Codex lane,
+    // which the LiteLLM key cannot authenticate: preflight must not go green.
     const home = tempHome();
     try {
       const r = runProbe({
         snippet: '_gstack_codex_auth_probe',
-        env: { GSTACK_LLM_API_KEY: 'sk-litellm-test' },
+        env: { GSTACK_LLM_API_KEY: 'sk-litellm-test', CODEX_HOME: undefined },
+        home,
+      });
+      expect(r.stdout.trim()).toBe('AUTH_FAILED');
+      expect(r.status).toBe(1);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('GSTACK_LLM_API_KEY + profile file under $CODEX_HOME → AUTH_OK', () => {
+    const home = tempHome();
+    try {
+      const codexHome = path.join(home, 'alt-codex');
+      fs.mkdirSync(codexHome, { recursive: true });
+      fs.writeFileSync(path.join(codexHome, 'gstack.config.toml'), 'model = "pro"\n');
+      const r = runProbe({
+        snippet: '_gstack_codex_auth_probe',
+        env: { GSTACK_LLM_API_KEY: 'sk-litellm-test', CODEX_HOME: codexHome },
         home,
       });
       expect(r.stdout.trim()).toBe('AUTH_OK');

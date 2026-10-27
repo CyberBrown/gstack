@@ -90,6 +90,22 @@ describe('gstack-hermes-probe: auth probe', () => {
     }
   });
 
+  test('api_key ref that is not a plain var name → AUTH_FAILED, no command runs (SEC-08)', () => {
+    const home = tempHome();
+    try {
+      const pwned = path.join(home, 'pwned');
+      makeProfile(home, 'gstack-reviewer', {
+        config: `model:\n  api_key: \${a[$(touch ${pwned})]}\n`,
+      });
+      const r = runProbe({ snippet: '_gstack_hermes_auth_probe gstack-reviewer', home });
+      expect(r.stdout.trim()).toBe('AUTH_FAILED');
+      expect(r.status).toBe(1);
+      expect(fs.existsSync(pwned)).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('${GSTACK_LLM_API_KEY} ref + env unset + profile .env has it → AUTH_OK', () => {
     const home = tempHome();
     try {

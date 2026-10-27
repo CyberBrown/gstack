@@ -1312,13 +1312,10 @@ lands at `~/.gstack/browser-skills/<name>/` after the test passes.
 
 ### Deploying to the active skill
 
-The active skill lives at `~/.claude/skills/gstack/`. After making changes:
-
-```bash
-cd ~/.claude/skills/gstack
-git fetch origin && git reset --hard origin/main
-bun run build
-```
+The active skill lives at `~/.claude/skills/gstack/`. In the CyberBrown fork, that
+checkout's `origin` may be upstream garrytan/gstack, so do not hard-reset it to
+`origin/main`. Follow the fork-aware procedure in CLAUDE.md, "Deploying to the
+active skill (fork-aware)": check out a reviewed fork revision, then `./setup`.
 
 Or copy the binary directly:
 

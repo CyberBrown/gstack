@@ -26,7 +26,15 @@ _gstack_codex_auth_probe() {
   _k1=$(printf '%s' "${CODEX_API_KEY:-}" | tr -d '[:space:]')
   _k2=$(printf '%s' "${OPENAI_API_KEY:-}" | tr -d '[:space:]')
   _k3=$(printf '%s' "${GSTACK_LLM_API_KEY:-}" | tr -d '[:space:]')
-  if [ -n "$_k1" ] || [ -n "$_k2" ] || [ -n "$_k3" ] || [ -f "$_codex_home/auth.json" ]; then
+  if [ -n "$_k1" ] || [ -n "$_k2" ] || [ -f "$_codex_home/auth.json" ]; then
+    echo "AUTH_OK"
+    return 0
+  fi
+  # GSTACK_LLM_API_KEY only authenticates through the `gstack` Codex profile
+  # (LiteLLM gateway). Without that profile file autoplan falls back to the
+  # default lane, which the key cannot authenticate, so it is not a signal
+  # on its own (BUG-05).
+  if [ -n "$_k3" ] && [ -f "$_codex_home/gstack.config.toml" ]; then
     echo "AUTH_OK"
     return 0
   fi
