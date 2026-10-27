@@ -1168,22 +1168,44 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   subagent (Agent tool, foreground — do NOT use run_in_background), then the
   outside voice (Bash). Both must complete before building the consensus table.
 
-  **Outside CEO voice** (via Bash) — run the block for the engine selected
+  **Outside CEO voice** (via Bash) — two steps; the engine is the one selected
   in Phase 0.5 (`$_OUTSIDE_VOICE`):
 
-  *Codex:*
+  *Step 1 — prompt file (both engines).* Create a private prompt file:
   ```bash
-  _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+  _gstack_outside_prompt_new
+  ```
+  It prints `OUTSIDE_PROMPT_FILE: <path>`. Use the **Write tool** to write the
+  prompt below to exactly that path, with every `<...>` placeholder filled in.
+  Never paste the prompt, the summaries, the plan path or any plan text into a
+  shell command: backticks and `$(...)` inside double quotes would execute.
 
-  You are a CEO/founder advisor reviewing a development plan.
+  ```text
+  IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+
+  Read the plan file at <plan_path>. You are a CEO/founder advisor reviewing a development plan.
   Challenge the strategic foundations: Are the premises valid or assumed? Is this the
   right problem to solve, or is there a reframing that would be 10x more impactful?
   What alternatives were dismissed too quickly? What competitive or market risks are
   unaddressed? What scope decisions will look foolish in 6 months? Be adversarial.
   No compliments. Just the strategic blind spots.
-  File: <plan_path>" -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
+  ```
+
+  *Step 2 — run the block for the engine selected in Phase 0.5.* Replace
+  `<OUTSIDE_PROMPT_FILE>` with the path printed in Step 1 (it is a mktemp
+  path; `_gstack_outside_prompt_read` refuses anything else).
+
+  *Codex:*
+  ```bash
+  source ~/.claude/skills/gstack/bin/gstack-codex-probe
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+  _OUTSIDE_PROMPT_FILE='<OUTSIDE_PROMPT_FILE>'
+  _OUTSIDE_PROMPT=$(_gstack_outside_prompt_read "$_OUTSIDE_PROMPT_FILE") || exit 1
+  _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "$_OUTSIDE_PROMPT" -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
   _CODEX_EXIT=$?
+  _gstack_outside_prompt_cleanup "$_OUTSIDE_PROMPT_FILE"
   if [ "$_CODEX_EXIT" = "124" ]; then
     _gstack_codex_log_event "codex_timeout" "600"
     _gstack_codex_log_hang "autoplan" "0"
@@ -1195,20 +1217,22 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   *Hermes:*
   ```bash
   source ~/.claude/skills/gstack/bin/gstack-hermes-probe
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
   _HERMES_PROFILE="${GSTACK_HERMES_PROFILE:-$(~/.claude/skills/gstack/bin/gstack-config get hermes_profile 2>/dev/null || echo gstack-reviewer)}"
   [ -n "$_HERMES_PROFILE" ] || _HERMES_PROFILE=gstack-reviewer
+  _OUTSIDE_PROMPT_FILE='<OUTSIDE_PROMPT_FILE>'
+  _OUTSIDE_PROMPT=$(_gstack_outside_prompt_read "$_OUTSIDE_PROMPT_FILE") || exit 1
   _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _HERMES_USAGE=$(mktemp /tmp/gstack-hermes-usage.XXXXXX.json)
-  _gstack_hermes_timeout_wrapper 600 hermes --profile "$_HERMES_PROFILE" --ignore-rules --in "$_REPO_ROOT" -t file -z "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
-
-  Read the plan file at <plan_path>. You are a CEO/founder advisor reviewing a development plan.
-  Challenge the strategic foundations: Are the premises valid or assumed? Is this the
-  right problem to solve, or is there a reframing that would be 10x more impactful?
-  What alternatives were dismissed too quickly? What competitive or market risks are
-  unaddressed? What scope decisions will look foolish in 6 months? Be adversarial.
-  No compliments. Just the strategic blind spots." --usage-file "$_HERMES_USAGE" < /dev/null
+  _HERMES_USAGE="${_OUTSIDE_PROMPT_FILE%/prompt}/usage.json"
+  _HERMES_TREE_BEFORE=$(_gstack_hermes_tree_state "$_REPO_ROOT")
+  _gstack_hermes_timeout_wrapper 600 hermes --profile "$_HERMES_PROFILE" --ignore-rules --in "$_REPO_ROOT" -t file -z "$_OUTSIDE_PROMPT" --usage-file "$_HERMES_USAGE" < /dev/null
   _HERMES_EXIT=$?
-  if [ "$_HERMES_EXIT" = "124" ]; then
+  _HERMES_TREE_AFTER=$(_gstack_hermes_tree_state "$_REPO_ROOT")
+  if [ "$_HERMES_TREE_AFTER" != "$_HERMES_TREE_BEFORE" ]; then
+    # The outside voice must be read-only. Report, never auto-restore.
+    _gstack_hermes_log_event "hermes_wrote_tree"
+    echo "[hermes-unavailable: wrote to tree] — Hermes changed the working tree during a read-only review. Its output is discarded for this phase. Nothing was restored: inspect git status / git diff before continuing."
+  elif [ "$_HERMES_EXIT" = "124" ]; then
     _gstack_hermes_log_event "hermes_timeout" "600"
     _gstack_hermes_log_hang "autoplan" "0"
     echo "[hermes stalled past 10 minutes — tagging as [hermes-unavailable] for this phase and proceeding with Claude subagent only]"
@@ -1218,8 +1242,9 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
     _gstack_hermes_log_event "hermes_voice_failed"
     echo "[hermes voice failed — the output above is an API error, not a review. Tagging as [hermes-unavailable] for this phase and proceeding with Claude subagent only]"
   fi
+  _gstack_outside_prompt_cleanup "$_OUTSIDE_PROMPT_FILE"
   ```
-  Timeout: 10 minutes (shell-wrapper) + 12 minutes (Bash outer gate). On hang or API failure, auto-degrades this phase's Hermes voice.
+  Timeout: 10 minutes (shell-wrapper) + 12 minutes (Bash outer gate). On hang, API failure or a write to the working tree, auto-degrades this phase's Hermes voice.
 
   **Claude CEO subagent** (via Agent tool):
   "Read the plan file at <plan_path>. You are an independent CEO/strategist
@@ -1321,13 +1346,21 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
 - Dual voices: always run BOTH Claude subagent AND the outside voice if
   available (P6).
 
-  **Outside design voice** (via Bash) — run the block for the engine
+  **Outside design voice** (via Bash) — two steps; the engine is the one
   selected in Phase 0.5 (`$_OUTSIDE_VOICE`):
 
-  *Codex:*
+  *Step 1 — prompt file (both engines).* Create a private prompt file:
   ```bash
-  _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+  _gstack_outside_prompt_new
+  ```
+  It prints `OUTSIDE_PROMPT_FILE: <path>`. Use the **Write tool** to write the
+  prompt below to exactly that path, with every `<...>` placeholder filled in.
+  Never paste the prompt, the summaries, the plan path or any plan text into a
+  shell command: backticks and `$(...)` inside double quotes would execute.
+
+  ```text
+  IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
 
   Read the plan file at <plan_path>. Evaluate this plan's
   UI/UX design decisions.
@@ -1341,8 +1374,23 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   accessibility requirements (keyboard nav, contrast, touch targets) specified or
   aspirational? Does the plan describe specific UI decisions or generic patterns?
   What design decisions will haunt the implementer if left ambiguous?
-  Be opinionated. No hedging." -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
+  Be opinionated. No hedging.
+  ```
+
+  *Step 2 — run the block for the engine selected in Phase 0.5.* Replace
+  `<OUTSIDE_PROMPT_FILE>` with the path printed in Step 1 (it is a mktemp
+  path; `_gstack_outside_prompt_read` refuses anything else).
+
+  *Codex:*
+  ```bash
+  source ~/.claude/skills/gstack/bin/gstack-codex-probe
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+  _OUTSIDE_PROMPT_FILE='<OUTSIDE_PROMPT_FILE>'
+  _OUTSIDE_PROMPT=$(_gstack_outside_prompt_read "$_OUTSIDE_PROMPT_FILE") || exit 1
+  _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "$_OUTSIDE_PROMPT" -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
   _CODEX_EXIT=$?
+  _gstack_outside_prompt_cleanup "$_OUTSIDE_PROMPT_FILE"
   if [ "$_CODEX_EXIT" = "124" ]; then
     _gstack_codex_log_event "codex_timeout" "600"
     _gstack_codex_log_hang "autoplan" "0"
@@ -1354,27 +1402,22 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   *Hermes:*
   ```bash
   source ~/.claude/skills/gstack/bin/gstack-hermes-probe
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
   _HERMES_PROFILE="${GSTACK_HERMES_PROFILE:-$(~/.claude/skills/gstack/bin/gstack-config get hermes_profile 2>/dev/null || echo gstack-reviewer)}"
   [ -n "$_HERMES_PROFILE" ] || _HERMES_PROFILE=gstack-reviewer
+  _OUTSIDE_PROMPT_FILE='<OUTSIDE_PROMPT_FILE>'
+  _OUTSIDE_PROMPT=$(_gstack_outside_prompt_read "$_OUTSIDE_PROMPT_FILE") || exit 1
   _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _HERMES_USAGE=$(mktemp /tmp/gstack-hermes-usage.XXXXXX.json)
-  _gstack_hermes_timeout_wrapper 600 hermes --profile "$_HERMES_PROFILE" --ignore-rules --in "$_REPO_ROOT" -t file -z "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
-
-  Read the plan file at <plan_path>. Evaluate this plan's
-  UI/UX design decisions.
-
-  Also consider these findings from the CEO review phase:
-  <insert CEO dual voice findings summary — key concerns, disagreements>
-
-  Does the information hierarchy serve the user or the developer? Are interaction
-  states (loading, empty, error, partial) specified or left to the implementer's
-  imagination? Is the responsive strategy intentional or afterthought? Are
-  accessibility requirements (keyboard nav, contrast, touch targets) specified or
-  aspirational? Does the plan describe specific UI decisions or generic patterns?
-  What design decisions will haunt the implementer if left ambiguous?
-  Be opinionated. No hedging." --usage-file "$_HERMES_USAGE" < /dev/null
+  _HERMES_USAGE="${_OUTSIDE_PROMPT_FILE%/prompt}/usage.json"
+  _HERMES_TREE_BEFORE=$(_gstack_hermes_tree_state "$_REPO_ROOT")
+  _gstack_hermes_timeout_wrapper 600 hermes --profile "$_HERMES_PROFILE" --ignore-rules --in "$_REPO_ROOT" -t file -z "$_OUTSIDE_PROMPT" --usage-file "$_HERMES_USAGE" < /dev/null
   _HERMES_EXIT=$?
-  if [ "$_HERMES_EXIT" = "124" ]; then
+  _HERMES_TREE_AFTER=$(_gstack_hermes_tree_state "$_REPO_ROOT")
+  if [ "$_HERMES_TREE_AFTER" != "$_HERMES_TREE_BEFORE" ]; then
+    # The outside voice must be read-only. Report, never auto-restore.
+    _gstack_hermes_log_event "hermes_wrote_tree"
+    echo "[hermes-unavailable: wrote to tree] — Hermes changed the working tree during a read-only review. Its output is discarded for this phase. Nothing was restored: inspect git status / git diff before continuing."
+  elif [ "$_HERMES_EXIT" = "124" ]; then
     _gstack_hermes_log_event "hermes_timeout" "600"
     _gstack_hermes_log_hang "autoplan" "0"
     echo "[hermes stalled past 10 minutes — tagging as [hermes-unavailable] for this phase and proceeding with Claude subagent only]"
@@ -1384,8 +1427,9 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
     _gstack_hermes_log_event "hermes_voice_failed"
     echo "[hermes voice failed — the output above is an API error, not a review. Tagging as [hermes-unavailable] for this phase and proceeding with Claude subagent only]"
   fi
+  _gstack_outside_prompt_cleanup "$_OUTSIDE_PROMPT_FILE"
   ```
-  Timeout: 10 minutes (shell-wrapper) + 12 minutes (Bash outer gate). On hang or API failure, auto-degrades this phase's Hermes voice.
+  Timeout: 10 minutes (shell-wrapper) + 12 minutes (Bash outer gate). On hang, API failure or a write to the working tree, auto-degrades this phase's Hermes voice.
 
   **Claude design subagent** (via Agent tool):
   "Read the plan file at <plan_path>. You are an independent senior product designer
@@ -1443,23 +1487,44 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
 - Dual voices: always run BOTH Claude subagent AND the outside voice if
   available (P6).
 
-  **Outside eng voice** (via Bash) — run the block for the engine selected
+  **Outside eng voice** (via Bash) — two steps; the engine is the one selected
   in Phase 0.5 (`$_OUTSIDE_VOICE`):
 
-  *Codex:*
+  *Step 1 — prompt file (both engines).* Create a private prompt file:
   ```bash
-  _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+  _gstack_outside_prompt_new
+  ```
+  It prints `OUTSIDE_PROMPT_FILE: <path>`. Use the **Write tool** to write the
+  prompt below to exactly that path, with every `<...>` placeholder filled in.
+  Never paste the prompt, the summaries, the plan path or any plan text into a
+  shell command: backticks and `$(...)` inside double quotes would execute.
 
-  Review this plan for architectural issues, missing edge cases,
+  ```text
+  IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+
+  Read the plan file at <plan_path>. Review this plan for architectural issues, missing edge cases,
   and hidden complexity. Be adversarial.
 
   Also consider these findings from prior review phases:
   CEO: <insert CEO consensus table summary — key concerns, DISAGREEs>
   Design: <insert Design consensus table summary, or 'skipped, no UI scope'>
+  ```
 
-  File: <plan_path>" -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
+  *Step 2 — run the block for the engine selected in Phase 0.5.* Replace
+  `<OUTSIDE_PROMPT_FILE>` with the path printed in Step 1 (it is a mktemp
+  path; `_gstack_outside_prompt_read` refuses anything else).
+
+  *Codex:*
+  ```bash
+  source ~/.claude/skills/gstack/bin/gstack-codex-probe
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+  _OUTSIDE_PROMPT_FILE='<OUTSIDE_PROMPT_FILE>'
+  _OUTSIDE_PROMPT=$(_gstack_outside_prompt_read "$_OUTSIDE_PROMPT_FILE") || exit 1
+  _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "$_OUTSIDE_PROMPT" -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
   _CODEX_EXIT=$?
+  _gstack_outside_prompt_cleanup "$_OUTSIDE_PROMPT_FILE"
   if [ "$_CODEX_EXIT" = "124" ]; then
     _gstack_codex_log_event "codex_timeout" "600"
     _gstack_codex_log_hang "autoplan" "0"
@@ -1471,20 +1536,22 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
   *Hermes:*
   ```bash
   source ~/.claude/skills/gstack/bin/gstack-hermes-probe
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
   _HERMES_PROFILE="${GSTACK_HERMES_PROFILE:-$(~/.claude/skills/gstack/bin/gstack-config get hermes_profile 2>/dev/null || echo gstack-reviewer)}"
   [ -n "$_HERMES_PROFILE" ] || _HERMES_PROFILE=gstack-reviewer
+  _OUTSIDE_PROMPT_FILE='<OUTSIDE_PROMPT_FILE>'
+  _OUTSIDE_PROMPT=$(_gstack_outside_prompt_read "$_OUTSIDE_PROMPT_FILE") || exit 1
   _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _HERMES_USAGE=$(mktemp /tmp/gstack-hermes-usage.XXXXXX.json)
-  _gstack_hermes_timeout_wrapper 600 hermes --profile "$_HERMES_PROFILE" --ignore-rules --in "$_REPO_ROOT" -t file -z "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
-
-  Read the plan file at <plan_path>. Review this plan for architectural issues, missing edge cases,
-  and hidden complexity. Be adversarial.
-
-  Also consider these findings from prior review phases:
-  CEO: <insert CEO consensus table summary — key concerns, DISAGREEs>
-  Design: <insert Design consensus table summary, or 'skipped, no UI scope'>" --usage-file "$_HERMES_USAGE" < /dev/null
+  _HERMES_USAGE="${_OUTSIDE_PROMPT_FILE%/prompt}/usage.json"
+  _HERMES_TREE_BEFORE=$(_gstack_hermes_tree_state "$_REPO_ROOT")
+  _gstack_hermes_timeout_wrapper 600 hermes --profile "$_HERMES_PROFILE" --ignore-rules --in "$_REPO_ROOT" -t file -z "$_OUTSIDE_PROMPT" --usage-file "$_HERMES_USAGE" < /dev/null
   _HERMES_EXIT=$?
-  if [ "$_HERMES_EXIT" = "124" ]; then
+  _HERMES_TREE_AFTER=$(_gstack_hermes_tree_state "$_REPO_ROOT")
+  if [ "$_HERMES_TREE_AFTER" != "$_HERMES_TREE_BEFORE" ]; then
+    # The outside voice must be read-only. Report, never auto-restore.
+    _gstack_hermes_log_event "hermes_wrote_tree"
+    echo "[hermes-unavailable: wrote to tree] — Hermes changed the working tree during a read-only review. Its output is discarded for this phase. Nothing was restored: inspect git status / git diff before continuing."
+  elif [ "$_HERMES_EXIT" = "124" ]; then
     _gstack_hermes_log_event "hermes_timeout" "600"
     _gstack_hermes_log_hang "autoplan" "0"
     echo "[hermes stalled past 10 minutes — tagging as [hermes-unavailable] for this phase and proceeding with Claude subagent only]"
@@ -1494,8 +1561,9 @@ Override: every AskUserQuestion → auto-decide using the 6 principles.
     _gstack_hermes_log_event "hermes_voice_failed"
     echo "[hermes voice failed — the output above is an API error, not a review. Tagging as [hermes-unavailable] for this phase and proceeding with Claude subagent only]"
   fi
+  _gstack_outside_prompt_cleanup "$_OUTSIDE_PROMPT_FILE"
   ```
-  Timeout: 10 minutes (shell-wrapper) + 12 minutes (Bash outer gate). On hang or API failure, auto-degrades this phase's Hermes voice.
+  Timeout: 10 minutes (shell-wrapper) + 12 minutes (Bash outer gate). On hang, API failure or a write to the working tree, auto-degrades this phase's Hermes voice.
 
   **Claude eng subagent** (via Agent tool):
   "Read the plan file at <plan_path>. You are an independent senior engineer
@@ -1598,13 +1666,21 @@ Log: "Phase 3.5 skipped — no developer-facing scope detected."
 - Dual voices: always run BOTH Claude subagent AND the outside voice if
   available (P6).
 
-  **Outside DX voice** (via Bash) — run the block for the engine selected
+  **Outside DX voice** (via Bash) — two steps; the engine is the one selected
   in Phase 0.5 (`$_OUTSIDE_VOICE`):
 
-  *Codex:*
+  *Step 1 — prompt file (both engines).* Create a private prompt file:
   ```bash
-  _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+  _gstack_outside_prompt_new
+  ```
+  It prints `OUTSIDE_PROMPT_FILE: <path>`. Use the **Write tool** to write the
+  prompt below to exactly that path, with every `<...>` placeholder filled in.
+  Never paste the prompt, the summaries, the plan path or any plan text into a
+  shell command: backticks and `$(...)` inside double quotes would execute.
+
+  ```text
+  IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
 
   Read the plan file at <plan_path>. Evaluate this plan's developer experience.
 
@@ -1618,8 +1694,23 @@ Log: "Phase 3.5 skipped — no developer-facing scope detected."
   3. API/CLI design: are names guessable? Are defaults sensible? Is it consistent?
   4. Docs: can a dev find what they need in under 2 minutes? Are examples copy-paste-complete?
   5. Upgrade path: can devs upgrade without fear? Migration guides? Deprecation warnings?
-  Be adversarial. Think like a developer who is evaluating this against 3 competitors." -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
+  Be adversarial. Think like a developer who is evaluating this against 3 competitors.
+  ```
+
+  *Step 2 — run the block for the engine selected in Phase 0.5.* Replace
+  `<OUTSIDE_PROMPT_FILE>` with the path printed in Step 1 (it is a mktemp
+  path; `_gstack_outside_prompt_read` refuses anything else).
+
+  *Codex:*
+  ```bash
+  source ~/.claude/skills/gstack/bin/gstack-codex-probe
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
+  _OUTSIDE_PROMPT_FILE='<OUTSIDE_PROMPT_FILE>'
+  _OUTSIDE_PROMPT=$(_gstack_outside_prompt_read "$_OUTSIDE_PROMPT_FILE") || exit 1
+  _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+  _gstack_codex_timeout_wrapper 600 codex exec $_CODEX_PROFILE_ARGS "$_OUTSIDE_PROMPT" -C "$_REPO_ROOT" -s read-only $_CODEX_SEARCH_ARGS < /dev/null
   _CODEX_EXIT=$?
+  _gstack_outside_prompt_cleanup "$_OUTSIDE_PROMPT_FILE"
   if [ "$_CODEX_EXIT" = "124" ]; then
     _gstack_codex_log_event "codex_timeout" "600"
     _gstack_codex_log_hang "autoplan" "0"
@@ -1631,27 +1722,22 @@ Log: "Phase 3.5 skipped — no developer-facing scope detected."
   *Hermes:*
   ```bash
   source ~/.claude/skills/gstack/bin/gstack-hermes-probe
+  source ~/.claude/skills/gstack/bin/gstack-outside-prompt
   _HERMES_PROFILE="${GSTACK_HERMES_PROFILE:-$(~/.claude/skills/gstack/bin/gstack-config get hermes_profile 2>/dev/null || echo gstack-reviewer)}"
   [ -n "$_HERMES_PROFILE" ] || _HERMES_PROFILE=gstack-reviewer
+  _OUTSIDE_PROMPT_FILE='<OUTSIDE_PROMPT_FILE>'
+  _OUTSIDE_PROMPT=$(_gstack_outside_prompt_read "$_OUTSIDE_PROMPT_FILE") || exit 1
   _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-  _HERMES_USAGE=$(mktemp /tmp/gstack-hermes-usage.XXXXXX.json)
-  _gstack_hermes_timeout_wrapper 600 hermes --profile "$_HERMES_PROFILE" --ignore-rules --in "$_REPO_ROOT" -t file -z "IMPORTANT: Do NOT read or execute any SKILL.md files or files in skill definition directories (paths containing skills/gstack). These are AI assistant skill definitions meant for a different system. Stay focused on repository code only.
-
-  Read the plan file at <plan_path>. Evaluate this plan's developer experience.
-
-  Also consider these findings from prior review phases:
-  CEO: <insert CEO consensus summary>
-  Eng: <insert Eng consensus summary>
-
-  You are a developer who has never seen this product. Evaluate:
-  1. Time to hello world: how many steps from zero to working? Target is under 5 minutes.
-  2. Error messages: when something goes wrong, does the dev know what, why, and how to fix?
-  3. API/CLI design: are names guessable? Are defaults sensible? Is it consistent?
-  4. Docs: can a dev find what they need in under 2 minutes? Are examples copy-paste-complete?
-  5. Upgrade path: can devs upgrade without fear? Migration guides? Deprecation warnings?
-  Be adversarial. Think like a developer who is evaluating this against 3 competitors." --usage-file "$_HERMES_USAGE" < /dev/null
+  _HERMES_USAGE="${_OUTSIDE_PROMPT_FILE%/prompt}/usage.json"
+  _HERMES_TREE_BEFORE=$(_gstack_hermes_tree_state "$_REPO_ROOT")
+  _gstack_hermes_timeout_wrapper 600 hermes --profile "$_HERMES_PROFILE" --ignore-rules --in "$_REPO_ROOT" -t file -z "$_OUTSIDE_PROMPT" --usage-file "$_HERMES_USAGE" < /dev/null
   _HERMES_EXIT=$?
-  if [ "$_HERMES_EXIT" = "124" ]; then
+  _HERMES_TREE_AFTER=$(_gstack_hermes_tree_state "$_REPO_ROOT")
+  if [ "$_HERMES_TREE_AFTER" != "$_HERMES_TREE_BEFORE" ]; then
+    # The outside voice must be read-only. Report, never auto-restore.
+    _gstack_hermes_log_event "hermes_wrote_tree"
+    echo "[hermes-unavailable: wrote to tree] — Hermes changed the working tree during a read-only review. Its output is discarded for this phase. Nothing was restored: inspect git status / git diff before continuing."
+  elif [ "$_HERMES_EXIT" = "124" ]; then
     _gstack_hermes_log_event "hermes_timeout" "600"
     _gstack_hermes_log_hang "autoplan" "0"
     echo "[hermes stalled past 10 minutes — tagging as [hermes-unavailable] for this phase and proceeding with Claude subagent only]"
@@ -1661,8 +1747,9 @@ Log: "Phase 3.5 skipped — no developer-facing scope detected."
     _gstack_hermes_log_event "hermes_voice_failed"
     echo "[hermes voice failed — the output above is an API error, not a review. Tagging as [hermes-unavailable] for this phase and proceeding with Claude subagent only]"
   fi
+  _gstack_outside_prompt_cleanup "$_OUTSIDE_PROMPT_FILE"
   ```
-  Timeout: 10 minutes (shell-wrapper) + 12 minutes (Bash outer gate). On hang or API failure, auto-degrades this phase's Hermes voice.
+  Timeout: 10 minutes (shell-wrapper) + 12 minutes (Bash outer gate). On hang, API failure or a write to the working tree, auto-degrades this phase's Hermes voice.
 
   **Claude DX subagent** (via Agent tool):
   "Read the plan file at <plan_path>. You are an independent DX engineer
