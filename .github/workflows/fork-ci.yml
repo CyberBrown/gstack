@@ -1,0 +1,55 @@
+name: Fork CI
+# CyberBrown/gstack fork CI (TOOL-01). Upstream's eval workflows target `main`
+# and ubicloud runners, so they never covered the fork's default branch.
+on:
+  pull_request:
+  push:
+    branches: [chris/remove-unused-hosts]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fork-delta:
+    name: fork-delta tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: bun install --frozen-lockfile
+      - name: Fork-delta test suite
+        run: >-
+          bun test
+          test/hermes-hardening.test.ts
+          test/codex-hardening.test.ts
+          test/outside-prompt.test.ts
+          test/host-config.test.ts
+          test/gen-skill-docs.test.ts
+          test/skill-collision-sentinel.test.ts
+      - name: Generated skill docs are fresh
+        run: |
+          bun run gen:skill-docs
+          git diff --exit-code -- '*.md' || {
+            echo "Generated SKILL.md files are stale. Run: bun run gen:skill-docs"
+            exit 1
+          }
+
+  free-suite:
+    # Upstream v1.35's full free suite has known failures on the fork's
+    # default branch (doc inventory misses /document-generate; browse,
+    # gbrain-sync and team-init tests need a local environment). Reported,
+    # not gating, until the upstream consolidation (OPS-01) lands.
+    name: free suite (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: bun install --frozen-lockfile
+      - run: bun run test
