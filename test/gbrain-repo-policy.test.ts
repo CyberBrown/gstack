@@ -14,6 +14,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { canRevokeReads } from './helpers/fs-caps';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -24,10 +25,22 @@ const BIN = path.join(ROOT, 'bin', 'gstack-gbrain-repo-policy');
 
 let tmpHome: string;
 
+function isolateGitRemote(repo: string, url: string): void {
+  const git = (...args: string[]) => {
+    const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 10_000 });
+    expect(result.status).toBe(0);
+    return result.stdout.trim();
+  };
+  expect(git('config', '--get', 'remote.origin.url')).toBe(url);
+  git('config', '--local', `url.${url}.insteadOf`, url);
+  expect(git('remote', 'get-url', 'origin')).toBe(url);
+}
+
 function run(args: string[], opts: { env?: Record<string, string> } = {}) {
   const res = spawnSync(BIN, args, {
     env: { ...process.env, GSTACK_HOME: tmpHome, ...(opts.env || {}) },
     encoding: 'utf-8',
+    timeout: 30_000,
   });
   return {
     stdout: (res.stdout || '').trim(),
@@ -50,6 +63,25 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpHome, { recursive: true, force: true });
+});
+
+test('fixture origin isolation overrides a controlled URL rewrite without changing the stored remote', () => {
+  const repo = path.join(tmpHome, 'repo');
+  fs.mkdirSync(repo);
+  const git = (...args: string[]) => {
+    const result = spawnSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 10_000 });
+    expect(result.status).toBe(0);
+    return result.stdout.trim();
+  };
+  const url = 'https://fixture.invalid/org/repo.git';
+  git('init', '-q');
+  git('remote', 'add', 'origin', url);
+  git('config', '--local', 'url.https://mirror.invalid/.insteadOf', 'https://fixture.invalid/');
+  expect(git('config', '--get', 'remote.origin.url')).toBe(url);
+  expect(git('remote', 'get-url', 'origin')).toBe('https://mirror.invalid/org/repo.git');
+  isolateGitRemote(repo, url);
+  expect(git('config', '--get', 'remote.origin.url')).toBe(url);
+  expect(git('remote', 'get-url', 'origin')).toBe(url);
 });
 
 describe('normalize', () => {
@@ -262,10 +294,305 @@ describe('get without arg (auto-detect from current dir)', () => {
         env: { ...process.env, GSTACK_HOME: tmpHome },
         cwd: cwdTmp,
         encoding: 'utf-8',
+        timeout: 30_000,
       });
       expect((res.stdout || '').trim()).toBe('unset');
     } finally {
       fs.rmSync(cwdTmp, { recursive: true, force: true });
     }
+  });
+});
+
+// ── #2140 sync-path chokepoint ──────────────────────────────────────────────
+// The tier above is a STORE. This block pins the ENFORCEMENT: a direct
+// gstack-gbrain-sync invocation (skill prose bypassed — cron, curiosity,
+// automation) must honor deny/read-only at the code-import stage, and the
+// egress receipt's "per-repo policy chokepoint (repoPolicyTier)" consent
+// string must describe code that exists. Wave-1 shipped the receipt string
+// without the function; these tests make that impossible to repeat.
+
+describe('gstack-gbrain-sync code stage honors the repo policy (#2140 sync path)', () => {
+  const SYNC = path.join(ROOT, 'bin', 'gstack-gbrain-sync.ts');
+  const REPO_URL = 'https://github.com/acme/widget.git';
+
+  let repoDir: string;
+
+  function makeRepo(): void {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbrain-policy-repo-'));
+    const git = (...args: string[]) =>
+      spawnSync('git', args, { cwd: repoDir, encoding: 'utf-8', timeout: 30_000 });
+    git('init', '-q', '.');
+    git('remote', 'add', 'origin', REPO_URL);
+    isolateGitRemote(repoDir, REPO_URL);
+    expect(git('config', '--local', '--unset', `url.${REPO_URL}.insteadOf`).status).toBe(0);
+    git('config', '--local', 'url.https://git.capy.ai/.insteadOf', 'https://github.com/');
+    expect(git('remote', 'get-url', 'origin').stdout.trim()).toBe('https://git.capy.ai/acme/widget.git');
+    expect(git('config', '--get', 'remote.origin.url').stdout.trim()).toBe(REPO_URL);
+    fs.writeFileSync(path.join(repoDir, 'README.md'), 'fixture\n');
+    git('add', '-A');
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'fixture');
+  }
+
+  function runSync(): { status: number; text: string; stages: any[] } {
+    const res = spawnSync('bun', [SYNC, '--code-only', '--incremental'], {
+      cwd: repoDir,
+      encoding: 'utf-8',
+      timeout: 60_000,
+      // HOME also redirected so engine detection can't find a real ~/.gbrain.
+      env: { ...process.env, GSTACK_HOME: tmpHome, HOME: tmpHome },
+    });
+    let stages: any[] = [];
+    try {
+      stages = JSON.parse(
+        fs.readFileSync(path.join(tmpHome, '.gbrain-sync-state.json'), 'utf-8'),
+      ).last_stages || [];
+    } catch {
+      // state file may be absent on early refusal paths — text asserts cover it
+    }
+    return {
+      status: res.status ?? -1,
+      text: `${res.stdout || ''}\n${res.stderr || ''}`,
+      stages,
+    };
+  }
+
+  afterEach(() => {
+    if (repoDir) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  test('implicit lookup uses the configured remote rather than its rewritten transport URL', () => {
+    makeRepo();
+    expect(run(['set', REPO_URL, 'deny']).status).toBe(0);
+    const r = spawnSync(BIN, ['get'], { cwd: repoDir, env: { ...process.env, GSTACK_HOME: tmpHome },
+      encoding: 'utf8', timeout: 30_000 });
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe('deny');
+  });
+
+  test('deny → code stage refuses loudly, exit 1, status refused-policy-deny', () => {
+    makeRepo();
+    expect(run(['set', REPO_URL, 'deny']).status).toBe(0);
+    const r = runSync();
+    expect(r.status).toBe(1);
+    expect(r.text).toContain('refused');
+    expect(r.text).toContain('deny');
+    const code = r.stages.find((s: any) => s.name === 'code');
+    expect(code?.detail?.status).toBe('refused-policy-deny');
+  });
+
+  test('read-only → clean skip (exit 0), status skipped-policy-read-only', () => {
+    makeRepo();
+    expect(run(['set', REPO_URL, 'read-only']).status).toBe(0);
+    const r = runSync();
+    expect(r.status).toBe(0);
+    expect(r.text).toContain('read-only');
+    const code = r.stages.find((s: any) => s.name === 'code');
+    expect(code?.detail?.status).toBe('skipped-policy-read-only');
+  });
+
+  test('store exists but unreadable → fail-closed refusal, never bypassed', () => {
+    if (!canRevokeReads()) return; // chmod is advisory here (win32, root, DAC-override containers)
+    makeRepo();
+    expect(run(['set', REPO_URL, 'deny']).status).toBe(0);
+    fs.chmodSync(policyFile(), 0o000);
+    try {
+      const r = runSync();
+      expect(r.status).toBe(1);
+      expect(r.text).toContain('refus');
+      const code = r.stages.find((s: any) => s.name === 'code');
+      expect(code?.detail?.status).toBe('refused-policy-unreadable');
+    } finally {
+      fs.chmodSync(policyFile(), 0o600);
+    }
+  });
+
+  test('no policy store → fail-open, stage proceeds past the gate (no policy status)', () => {
+    makeRepo();
+    const r = runSync();
+    const code = r.stages.find((s: any) => s.name === 'code');
+    // With no engine in the redirected HOME the stage skips for ENGINE
+    // reasons — what matters is that no policy refusal fired and the exit
+    // is clean, preserving pre-policy behavior for every non-policy user.
+    expect(r.status).toBe(0);
+    expect(String(code?.detail?.status || '')).not.toContain('policy');
+    expect(r.text).not.toContain('refused');
+  });
+});
+
+describe('memorable recall opt-in (#3359)', () => {
+  const A = 'https://github.com/acme/client-a.git';
+  const memo = (url: string, extra: Record<string, string> = {}) => run(['memorable', 'get', url], { env: extra });
+
+  test('off by default: a read-only remote reports off until it is opted in', () => {
+    expect(run(['set', A, 'read-only']).status).toBe(0);
+    expect(memo(A).stdout).toBe('read-only\toff');
+    const r = run(['memorable', 'set', A, 'allow']);
+    expect(r.status).toBe(0);
+    expect(memo(A).stdout).toBe('read-only\tallow');
+    expect(readPolicy()._memorable_recall).toEqual({ 'github.com/acme/client-a': 'allow' });
+    expect(run(['list']).stdout).toBe('github.com/acme/client-a\tread-only\tmemorable=allow');
+  });
+
+  test('the opt-in is per remote: another remote, a prefix-sharing remote and an unset remote stay off; the SSH spelling of the same remote is the same key', () => {
+    for (const u of [A, 'https://github.com/acme/client-b', 'https://github.com/acme/client-a-fork', 'https://github.com/acme/client']) {
+      expect(run(['set', u, 'read-only']).status).toBe(0);
+    }
+    expect(run(['memorable', 'set', A, 'allow']).status).toBe(0);
+    expect(memo('https://github.com/acme/client-b').stdout).toBe('read-only\toff');
+    expect(memo('https://github.com/acme/client-a-fork').stdout).toBe('read-only\toff');
+    expect(memo('https://github.com/acme/client').stdout).toBe('read-only\toff');
+    expect(memo('https://gitlab.com/acme/client-a').stdout).toBe('unset\toff');
+    expect(memo('git@github.com:acme/client-a.git').stdout).toBe('read-only\tallow');
+  });
+
+  test('deny always wins: the opt-in is refused on deny, and a hand-written opt-in on a deny remote reads off', () => {
+    expect(run(['set', A, 'deny']).status).toBe(0);
+    const before = fs.readFileSync(policyFile(), 'utf-8');
+    const r = run(['memorable', 'set', A, 'allow']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('deny tier always vetoes');
+    expect(fs.readFileSync(policyFile(), 'utf-8')).toBe(before);
+    fs.writeFileSync(policyFile(), JSON.stringify({ ...readPolicy(), _memorable_recall: { 'github.com/acme/client-a': 'allow' } }));
+    expect(memo(A).stdout).toBe('deny\toff');
+  });
+
+  test('the opt-in is refused on read-write and unset remotes (nothing to lift)', () => {
+    expect(run(['set', A, 'read-write']).status).toBe(0);
+    expect(run(['memorable', 'set', A, 'allow']).status).toBe(2);
+    expect(run(['memorable', 'set', 'https://github.com/acme/never-set', 'allow']).status).toBe(2);
+    expect(readPolicy()._memorable_recall).toBeUndefined();
+  });
+
+  test('changing the tier clears the opt-in, re-setting the same tier keeps it, and off removes it', () => {
+    run(['set', A, 'read-only']);
+    run(['memorable', 'set', A, 'allow']);
+    expect(run(['set', A, 'read-only']).stdout).not.toContain('Cleared');
+    expect(memo(A).stdout).toBe('read-only\tallow');
+    const flip = run(['set', A, 'read-write']);
+    expect(flip.stdout).toContain('Cleared the Memorable recall opt-in');
+    run(['set', A, 'read-only']);
+    expect(memo(A).stdout).toBe('read-only\toff');
+    run(['memorable', 'set', A, 'allow']);
+    expect(run(['memorable', 'set', A, 'off']).status).toBe(0);
+    expect(memo(A).stdout).toBe('read-only\toff');
+    expect(readPolicy()._memorable_recall).toBeUndefined();
+  });
+
+  test('a malformed opt-in reads off: any value but "allow", or a map that is not an object', () => {
+    run(['set', A, 'read-only']);
+    for (const bad of [{ 'github.com/acme/client-a': true }, { 'github.com/acme/client-a': 'ALLOW' }, 'allow', ['github.com/acme/client-a'], null]) {
+      fs.writeFileSync(policyFile(), JSON.stringify({ _schema_version: 2, 'github.com/acme/client-a': 'read-only', _memorable_recall: bad }));
+      expect(memo(A).stdout).toBe('read-only\toff');
+    }
+  });
+
+  test('a corrupt store fails closed: exit 2, never quarantined, store left as is', () => {
+    fs.writeFileSync(policyFile(), '{"_schema_version":2,"github.com/acme/client-a":"read-only",', { mode: 0o600 });
+    const r = memo(A);
+    expect(r.status).toBe(2);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('corrupt');
+    expect(fs.readFileSync(policyFile(), 'utf-8')).toContain('"read-only",');
+    expect(fs.readdirSync(tmpHome).some((f) => f.includes('.corrupt-'))).toBe(false);
+  });
+
+  test('a second store that makes the remote read-only must opt it in too; its deny still wins; a corrupt second store fails closed', () => {
+    const legacy = path.join(tmpHome, 'legacy');
+    fs.mkdirSync(legacy);
+    const extra = { GSTACK_TEST_LEGACY_ROOT: legacy };
+    const legacyStore = path.join(legacy, 'gbrain-repo-policy.json');
+    run(['set', A, 'read-only'], { env: extra });
+    expect(run(['memorable', 'set', A, 'allow'], { env: extra }).status).toBe(0);
+    expect(memo(A, extra).stdout).toBe('read-only\tallow');
+    fs.writeFileSync(legacyStore, JSON.stringify({ _schema_version: 2, 'github.com/acme/client-a': 'read-only' }));
+    expect(memo(A, extra).stdout).toBe('read-only\toff');
+    expect(run(['memorable', 'set', A, 'allow'], { env: extra }).stderr).toContain('Opt in there too');
+    fs.writeFileSync(legacyStore, JSON.stringify({ _schema_version: 2, 'github.com/acme/client-a': 'read-only', _memorable_recall: { 'github.com/acme/client-a': 'allow' } }));
+    expect(memo(A, extra).stdout).toBe('read-only\tallow');
+    fs.writeFileSync(legacyStore, JSON.stringify({ _schema_version: 2, 'github.com/acme/client-a': 'deny', _memorable_recall: { 'github.com/acme/client-a': 'allow' } }));
+    expect(memo(A, extra).stdout).toBe('deny\toff');
+    fs.writeFileSync(legacyStore, '{');
+    expect(memo(A, extra).status).toBe(2);
+  });
+
+  test('a store path that is not a readable file fails closed, in either root', () => {
+    fs.mkdirSync(policyFile());
+    expect(memo(A).status).toBe(2);
+    fs.rmdirSync(policyFile());
+    const legacy = path.join(tmpHome, 'legacy');
+    fs.mkdirSync(path.join(legacy, 'gbrain-repo-policy.json'), { recursive: true });
+    const r = memo(A, { GSTACK_TEST_LEGACY_ROOT: legacy });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('not a readable file');
+  });
+
+  test('review hardening: empty, non-object or multi-document stores, and invalid tier values, fail closed in either root', () => {
+    const legacy = path.join(tmpHome, 'legacy');
+    fs.mkdirSync(legacy);
+    const extra = { GSTACK_TEST_LEGACY_ROOT: legacy };
+    const legacyStore = path.join(legacy, 'gbrain-repo-policy.json');
+    run(['set', A, 'read-only']);
+    for (const bad of ['', '  \n', 'null', '[]', '7', '{}{}']) {
+      fs.writeFileSync(legacyStore, bad);
+      const r = memo(A, extra);
+      expect([bad, r.status, r.stdout]).toEqual([bad, 2, '']);
+    }
+    fs.rmSync(legacyStore);
+    for (const value of [false, null, 7, 'none', 'Read-Only']) {
+      fs.writeFileSync(policyFile(), JSON.stringify({ _schema_version: 2, 'github.com/acme/client-a': value }));
+      expect([value, memo(A).status]).toEqual([value, 2]);
+    }
+    fs.writeFileSync(policyFile(), JSON.stringify({ _schema_version: 2, 'github.com/acme/client-a': false }));
+    fs.writeFileSync(legacyStore, JSON.stringify({ 'github.com/acme/client-a': 'read-only', _memorable_recall: { 'github.com/acme/client-a': 'allow' } }));
+    expect(memo(A, extra).status).toBe(2);
+  });
+
+  test('review hardening: a dangling symlink or an unsearchable directory is never read as no store', () => {
+    fs.symlinkSync(path.join(tmpHome, 'missing.json'), policyFile());
+    expect(memo(A).status).toBe(2);
+    fs.rmSync(policyFile());
+    const legacy = path.join(tmpHome, 'legacy');
+    fs.mkdirSync(legacy);
+    fs.symlinkSync(path.join(tmpHome, 'missing.json'), path.join(legacy, 'gbrain-repo-policy.json'));
+    expect(memo(A, { GSTACK_TEST_LEGACY_ROOT: legacy }).status).toBe(2);
+    fs.rmSync(path.join(legacy, 'gbrain-repo-policy.json'));
+    if (!canRevokeReads()) return;
+    fs.writeFileSync(path.join(legacy, 'gbrain-repo-policy.json'), JSON.stringify({ 'github.com/acme/client-a': 'deny' }));
+    fs.chmodSync(legacy, 0o600);
+    try {
+      expect(memo(A, { GSTACK_TEST_LEGACY_ROOT: legacy }).status).toBe(2);
+    } finally {
+      fs.chmodSync(legacy, 0o700);
+    }
+    const nested = path.join(tmpHome, 'ancestor', 'nested');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, 'gbrain-repo-policy.json'), JSON.stringify({ 'github.com/acme/client-a': 'deny' }));
+    fs.chmodSync(path.join(tmpHome, 'ancestor'), 0o600);
+    try {
+      const r = memo(A, { GSTACK_TEST_LEGACY_ROOT: nested });
+      expect([r.status, r.stdout]).toEqual([2, '']);
+      expect(r.stderr).toContain('not a searchable directory');
+    } finally {
+      fs.chmodSync(path.join(tmpHome, 'ancestor'), 0o700);
+    }
+    const absentUnder = path.join(tmpHome, 'no', 'such', 'root');
+    expect(memo(A, { GSTACK_TEST_LEGACY_ROOT: absentUnder }).stdout).toBe('unset\toff');
+  });
+
+  test('review hardening: the lookup never writes: a schema-less store is not migrated or rewritten', () => {
+    const legacyShape = JSON.stringify({ 'github.com/acme/client-a': 'read-only', 'github.com/acme/old': 'allow', _memorable_recall: { 'github.com/acme/client-a': 'allow' } });
+    fs.writeFileSync(policyFile(), legacyShape);
+    expect(memo(A).stdout).toBe('read-only\tallow');
+    expect(memo('https://github.com/acme/old').stdout).toBe('read-write\toff');
+    expect(fs.readFileSync(policyFile(), 'utf-8')).toBe(legacyShape);
+  });
+
+  test('the two metadata keys are never stored as remotes; the _unattributed sentinel still is', () => {
+    const r = run(['set', '_memorable_recall', 'read-write']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('reserved key');
+    expect(run(['set', '_schema_version', 'deny']).status).toBe(2);
+    expect(run(['set', '_unattributed', 'deny']).status).toBe(0);
+    expect(run(['list']).stdout).toBe('_unattributed\tdeny');
   });
 });

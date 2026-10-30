@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# gstack-design-doc-find — print the design doc a plan review should read.
+#
+# Usage: gstack-design-doc-find <slug> <branch>
+#
+# Prints one absolute path, or nothing when no design doc exists. Exit 0 either
+# way; exit 2 on a usage error.
+#
+# Precedence:
+#   1. newest $GSTACK_STATE_ROOT/projects/<slug>/*-<branch>-design-*.md
+#   2. else newest $GSTACK_STATE_ROOT/projects/<slug>/*-design-*.md
+#   3. the newest repo doc under $TOP/docs/designs/ wins when no state-root doc
+#      exists or it is newer than the state-root doc. A root DESIGN.md is the
+#      design system /design-consultation writes, never a design doc (#2839).
+#      office-hours writes both copies; the committed copy is what teammates
+#      see, but a stale repo doc never shadows a newer private session.
+#
+# Host plan copy (#542): /office-hours in host plan mode records the plan file
+# that holds its doc in <state-root doc>.plan-copy. When that file exists this
+# prints, on stderr so the path on stdout is unchanged, a DESIGN_PLAN_COPY line
+# with the write-through command, plus a STALE_DESIGN_DOC line when the plan
+# file is newer than the chosen doc and differs from it. The design doc stays
+# the source of truth; edits in the plan copy are written through to it.
+set -u
+
+if [ "$#" -ne 2 ] || [ -z "$1" ]; then
+  echo "usage: gstack-design-doc-find <slug> <branch>" >&2
+  exit 2
+fi
+SLUG=$1
+BRANCH=$2
+
+eval "$("$(dirname "$0")/gstack-paths")"; : "${GSTACK_STATE_ROOT:?gstack-paths failed; reinstall with ./setup or /gstack-upgrade}"
+
+newest() {
+  ls -t "$@" 2>/dev/null | head -1
+}
+
+PROJECT_DIR="$GSTACK_STATE_ROOT/projects/$SLUG"
+LOCALDOC=$(newest "$PROJECT_DIR"/*-"$BRANCH"-design-*.md)
+[ -z "$LOCALDOC" ] && LOCALDOC=$(newest "$PROJECT_DIR"/*-design-*.md)
+
+REPODOC=""
+TOP=$(git rev-parse --show-toplevel 2>/dev/null || true)
+[ -n "$TOP" ] && REPODOC=$(newest "$TOP"/docs/designs/*.md)
+
+DESIGN="$LOCALDOC"
+if [ -n "$REPODOC" ] && { [ -z "$LOCALDOC" ] || [ "$REPODOC" -nt "$LOCALDOC" ]; }; then
+  DESIGN="$REPODOC"
+fi
+[ -n "$DESIGN" ] && printf '%s\n' "$DESIGN"
+
+COPY=""
+[ -n "$LOCALDOC" ] && COPY=$(head -1 "$LOCALDOC.plan-copy" 2>/dev/null)
+case "$COPY" in /*.md) ;; *) COPY="" ;; esac
+if [ -n "$COPY" ] && [ -f "$COPY" ]; then
+  echo "DESIGN_PLAN_COPY: $COPY is the host plan-mode copy of $LOCALDOC, which stays the source of truth. After your last edit to the copy, write it through: cp \"$COPY\" \"$LOCALDOC\"" >&2
+  if [ "$COPY" -nt "$DESIGN" ] && ! cmp -s "$COPY" "$DESIGN"; then
+    echo "STALE_DESIGN_DOC: the plan copy is newer than $DESIGN. Write it through now, then read $LOCALDOC: cp \"$COPY\" \"$LOCALDOC\"" >&2
+  fi
+fi
+exit 0

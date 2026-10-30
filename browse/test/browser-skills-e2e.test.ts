@@ -17,11 +17,13 @@
 import { describe, test, expect, beforeAll } from 'bun:test';
 import { handleSkillCommand } from '../src/browser-skill-commands';
 import { listBrowserSkills, defaultTierPaths } from '../src/browser-skills';
-import { initRegistry, rotateRoot } from '../src/token-registry';
+import { initRegistry, __resetRegistry } from '../src/token-registry';
 
 beforeAll(() => {
-  // Some preceding tests may have rotated the registry; ensure we have a root.
-  rotateRoot();
+  // __resetRegistry zeroes rootToken so the new initRegistry mismatch guard
+  // doesn't fire. rotateRoot would leave a UUID in rootToken and the next
+  // initRegistry call would throw.
+  __resetRegistry();
   initRegistry('e2e-root-token');
 });
 
@@ -83,7 +85,17 @@ describe('browser-skills E2E — bundled hackernews-frontpage', () => {
   // It takes ~1s. Run it last so other assertions are quick.
   test('$B skill test hackernews-frontpage runs script.test.ts and reports pass', async () => {
     const result = await handleSkillCommand(['test', 'hackernews-frontpage'], { port: 0 });
-    // bun test prints summary to stderr; handleSkillCommand returns stderr || stdout
-    expect(result).toMatch(/13 pass|0 fail|tests passed/);
+    // `bun test` splits its report across streams: the version banner goes to
+    // stdout, the pass/fail summary to stderr. handleSkillCommand must return
+    // both, so assert on each stream's half.
+    //
+    // This used to flake under full-suite load: capturing the child through
+    // pipes dropped stderr on the first piped spawn in the process, so the
+    // result was just the banner. The old `13 pass|0 fail|tests passed` regex
+    // also had a `tests passed` alternative that matched a synthetic fallback
+    // string, which would have passed vacuously on an empty capture.
+    expect(result).toMatch(/bun test v/); // stdout half
+    expect(result).toMatch(/\b0 fail\b/); // stderr half
+    expect(result).toMatch(/Ran \d+ tests/);
   }, 30_000);
 });
