@@ -835,6 +835,23 @@ describe('Autoplan parent publication guard', () => {
     expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});
     expect(readOwnedClaudePublicTranscript(f.input.transcript_path, f.cwd, f.sessionId)).toEqual(before);
   });
+  // Claude Code 2.1.x can journal a phase-entry Read after PreToolUse; a pending
+  // entry never opens the next phase before the predecessor is published.
+  test('an in-flight Read cannot enter the next phase before the predecessor is published', async () => {
+    const f = fixture();
+    f.input.tool_input = { file_path: path.join(ROOT, 'autoplan/sections/design-phase.md') }; f.journal();
+    const output: any = await withNativeProjectDirectory(f.cwd, () => withPublicationClock(() => runPublicationHook(f.input, ROOT)));
+    expect(output.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+  test('an in-flight Read after a later human turn gets the disarmed answer (allow)', async () => {
+    const f = fixture(); f.message();
+    f.input.tool_input = { file_path: path.join(ROOT, 'autoplan/sections/design-phase.md') };
+    const { rows, record } = f.journal();
+    rows.push(record('assistant', [], { message: { role: 'assistant', content: [], stop_reason: 'end_turn' } }),
+      record('user', 'wait, which gstack is this?', { origin: { kind: 'human' }, promptId: randomUUID(), promptSource: 'typed' }));
+    fs.writeFileSync(f.input.transcript_path, rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual(OWNED_READ_APPROVAL);
+  });
   test('an in-flight Read can revisit an earlier established phase', async () => {
     const f = fixture('design', 'ceo'); f.journal();
     expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual(OWNED_READ_APPROVAL);
@@ -1594,5 +1611,39 @@ describe('PAX-3638: symlinked plan directory and superseded failed inits', () =>
     f.use('alias-edit', 'Edit', { file_path: f.aliasActive, old_string: 'Keep documented behavior.', new_string: 'Implement new behavior.' });
     f.current(); f.reorder();
     expect(f.evaluate()).toMatchObject({ allow: false, reason: expect.stringContaining('(code mutation_pending,') });
+  });
+});
+
+// Claude Code 2.1.x journals a parent Agent tool_use only after PreToolUse
+// returns, so the hook never sees the current Agent use. Like a streamed Read,
+// a pending Agent may act inside the proven phase but never enter a new one.
+describe('pending (unjournaled) Agent dispatch', () => {
+  function voiceSnapshot(f: ReturnType<typeof fixture>, phase: Phase, id: string) {
+    const skill = path.join(f.cwd, id, 'SKILL.md');
+    fs.mkdirSync(path.dirname(skill));
+    fs.writeFileSync(skill, `---\nname: plan-${phase === 'dx' ? 'devex' : phase}-review\n---\n## Review Sections\nApply every current review criterion.\n`);
+    const method = prepareMethodology(phase, skill, f.restore).methodologyPath;
+    f.use(id, 'Bash', { command: `bun "${ROOT}/bin/gstack-autoplan-snapshot.ts" create ${phase} "${f.active}" "${f.restore}" "${method}"` });
+    const snapshot = createSnapshot(phase, f.active, f.restore, method);
+    f.result(id, { content: JSON.stringify(snapshot) });
+    return snapshot;
+  }
+  test('a pending Agent dispatch inside the current phase is allowed', async () => {
+    const f = fixture();
+    const snap = voiceSnapshot(f, 'ceo', 'ceo-voice');
+    f.read('ceo-voice-json', path.join(path.dirname(snap.snapshotPath), 'snapshot.json'));
+    f.input.tool_name = 'Agent'; f.input.tool_use_id = 'pending-agent';
+    f.input.tool_input = { prompt: snap.nativeDispatchPrompt };
+    f.journal(); // the current Agent use is deliberately NOT journaled
+    expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});
+  });
+  test('a pending Agent dispatch cannot enter a later phase', async () => {
+    const f = fixture();
+    const snap = voiceSnapshot(f, 'design', 'design-voice');
+    f.input.tool_name = 'Agent'; f.input.tool_use_id = 'pending-agent';
+    f.input.tool_input = { prompt: snap.nativeDispatchPrompt };
+    f.journal();
+    const output: any = await withNativeProjectDirectory(f.cwd, () => withPublicationClock(() => runPublicationHook(f.input, ROOT)));
+    expect(output.hookSpecificOutput?.permissionDecision).toBe('deny');
   });
 });
