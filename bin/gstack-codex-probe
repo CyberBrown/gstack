@@ -110,7 +110,7 @@ _gstack_codex_config_set() {
   # True when config.yaml in the state root sets $1 to a non-empty value.
   # Read with the state-root helper's builtins in a subshell, like the consent check.
   (
-    . "$_GSTACK_CODEX_BIN/gstack-state-root.sh" 2>/dev/null || exit 0
+    . "$_GSTACK_CODEX_BIN/gstack-state-root.sh" 2>/dev/null || exit 0  # best-effort: no state-root helper means no config, so the fork key reads unset
     gstack_state_root_select; gstack_legacy_root_select
     gstack_config_select "$1" || exit 1
     [ -n "${_gstack_cfg_value:-}" ]
@@ -338,7 +338,7 @@ _gstack_codex_consent() {
   local _trust_rc=0
   # Fast path, no bun: nothing to check without a deny list.
   if [ -n "${GSTACK_OUTSIDE_TRUST_DENY:-}" ] || (
-    . "$_GSTACK_CODEX_BIN/gstack-state-root.sh" 2>/dev/null || exit 0
+    . "$_GSTACK_CODEX_BIN/gstack-state-root.sh" 2>/dev/null || exit 0  # best-effort: no state-root helper means no deny list in config; env still applies
     gstack_state_root_select; gstack_legacy_root_select
     gstack_config_select outside_voice_trust_deny || exit 1
     [ -n "${_gstack_cfg_value:-}" ]

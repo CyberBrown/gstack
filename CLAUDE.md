@@ -571,7 +571,7 @@ the fork commits from the working tree. Deploy a reviewed fork revision instead:
 4. `git -C <install> fetch <cyberbrown-remote> --tags && git -C <install> checkout <reviewed tag or commit>`
 5. Rebuild: `cd <install> && ./setup --host <claude|codex|hermes|muse>`
 
-The upstream notes below about `bun run build` and gbrain still apply after step 5.
+After step 5, re-run `gstack-config gbrain-refresh` if you use gbrain; the upstream notes below about `bun run build` and gbrain still apply.
 
 `bun run build` renders every host in a checkout setup never ran in. In an
 install (any checkout with `.gstack-installed-hosts`, including one set up with
