@@ -10,6 +10,7 @@
  */
 import { sha256Hex, writeReceipt } from './egress-receipt';
 import { modelFamily, type ModelFamily } from './outside-voice-runner';
+import { LANE_KEY_VAR, resolveLane } from './llm-lane';
 
 export interface ApiCallRequest { model: string; prompt: string; timeoutMs: number; env?: Record<string, string | undefined>; signal?: AbortSignal; maxTokens?: number }
 export interface ApiUsage { input_tokens?: number; output_tokens?: number }
@@ -51,6 +52,17 @@ async function post(url: string, headers: Record<string, string>, body: string, 
 /** One call; throws with the provider's error text on a non-2xx status. */
 export async function callModel(req: ApiCallRequest): Promise<ApiCallResult> {
   const env = req.env ?? process.env;
+  // Fork: on the LiteLLM lane every family goes to the gateway's OpenAI-compatible API.
+  const lane = resolveLane(env);
+  if (lane.mode === 'litellm') {
+    if (!lane.ready) throw new Error(`LiteLLM lane unavailable: ${lane.problem}. Repair: ${lane.repair}`);
+    const body = JSON.stringify({ model: req.model, messages: [{ role: 'user', content: req.prompt }] });
+    const { status, json } = await post(`${lane.baseUrl}/chat/completions`, { authorization: `Bearer ${env[LANE_KEY_VAR]}` }, body, req, 'litellm');
+    if (status < 200 || status >= 300) throw new Error(`litellm ${status}: ${json?.error?.message ?? json?.raw ?? JSON.stringify(json)}`);
+    const content = json?.choices?.[0]?.message?.content;
+    const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map((c: any) => c?.text ?? '').join('\n') : '';
+    return { text, model: typeof json?.model === 'string' ? json.model : req.model, usage: { input_tokens: json?.usage?.prompt_tokens, output_tokens: json?.usage?.completion_tokens }, provider: 'openai', status };
+  }
   const family = modelFamily(req.model);
   const auth = apiKeyFor(family, env);
   if (!auth) throw new Error(`no API key for model family ${family} (set ${family === 'anthropic' ? 'ANTHROPIC_API_KEY' : family === 'openai' ? 'OPENAI_API_KEY' : 'OPENAI_API_KEY or ANTHROPIC_API_KEY and name a model from that family'})`);

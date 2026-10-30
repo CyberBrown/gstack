@@ -34,6 +34,16 @@ for (const name of ['GSTACK_STATE_ROOT', 'GSTACK_STATE_DIR']) {
   delete process.env[name];
   process.stderr.write(`test-setup: stripped inherited ${name}; tests isolate state via GSTACK_HOME\n`);
 }
+// Fork (CyberBrown/gstack) lane hermeticity: the production default is the
+// LiteLLM lane (lib/llm-lane.ts), which refuses every outside call without
+// GSTACK_LLM_API_KEY. Upstream tests exercise the direct lane, and a
+// developer's outside_voice/trust settings must not change a result. Lane
+// tests set these per test.
+process.env.GSTACK_LLM_LANE = 'direct';
+process.env.GSTACK_OUTSIDE_VOICE = 'auto';
+process.env.GSTACK_OUTSIDE_FALLBACK = 'none';
+process.env.GSTACK_OUTSIDE_TRUST_DENY = '';
+for (const name of ['GSTACK_LLM_API_KEY', 'GSTACK_LLM_BASE_URL', 'GSTACK_CODEX_PROFILE', 'GSTACK_HERMES_PROFILE', 'GSTACK_OUTSIDE_TRUST_OVERRIDE']) delete process.env[name];
 // The Capy installer's launch markers (GSTA-99, GSTA-104): a focused `bun test`
 // run from a shell that sourced the launch file would hand every product child
 // an unattended Capy session it never set up. The shard engine strips the same

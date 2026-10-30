@@ -106,7 +106,7 @@ export function initRun(o: InitOptions, lines: string[] = []): RunState {
   const order = phaseOrder(scope);
   const run = o.runId ?? `${path.basename(out)}-${new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0, 14)}`;
   // codex_reviews gates the outside voice here, before any dispatch: a refusal is a terminal not_run outcome per phase.
-  const consent = (o.outsideEnabled ?? true) ? outsideConsent({ userInvoked: false }) : undefined;
+  const consent = (o.outsideEnabled ?? true) ? outsideConsent({ userInvoked: false, cwd: o.cwd }) : undefined;
   const consentMissing = consent && !consent.allowed ? consent.lines[0] : undefined;
   const sessionKind = o.sessionKind ?? process.env.GSTACK_SESSION_KIND ?? 'unattended';
   const phases: Record<string, PhaseState> = {};

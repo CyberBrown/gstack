@@ -4,6 +4,7 @@ import { resolveClaudeCommand, type ClaudeCommand } from './claude-bin';
 import { initializeWindowsReviewJob, WindowsReviewSupervisionError } from './claude-code-windows-job';
 import { ModelPolicyError, describeSelection, resolvePlanReviewModel, selectionRepair, type ModelSelection } from './model-policy';
 import { emitModelPolicyNotice } from './model-policy-notice';
+import { claudeLaneEnv, claudeLaneSettingsEnv, resolveLane } from './llm-lane';
 
 export const CLAUDE_CODE_OUTPUT_LIMIT = 32 * 1024 * 1024;
 const DRAIN_TIMEOUT_MS = 500;
@@ -52,6 +53,11 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function laneSettings(env: NodeJS.ProcessEnv): { env?: Record<string, string> } {
+  const settingsEnv = claudeLaneSettingsEnv(resolveLane(env), env);
+  return settingsEnv ? { env: settingsEnv } : {};
+}
+
 /** Keep argument construction separate so wrappers never interpolate a prompt. */
 export function claudeCodeArgs(options: Pick<ClaudeCodeOptions, 'access' | 'resume' | 'selection'>, command: ClaudeCommand, env: NodeJS.ProcessEnv = process.env): string[] {
   const args = [
@@ -60,7 +66,8 @@ export function claudeCodeArgs(options: Pick<ClaudeCodeOptions, 'access' | 'resu
     '--tools', options.access === 'none' ? '' : 'Read,Grep,Glob',
     '--disallowedTools', 'mcp__*',
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-    '--settings', '{"disableAllHooks":true}',
+    // Fork: on the LiteLLM lane the flag settings also pin the gateway and model (lib/llm-lane.ts).
+    '--settings', JSON.stringify({ disableAllHooks: true, ...laneSettings(env) }),
     '--permission-mode', 'default',
   ];
   if (options.access === 'none') {
@@ -150,13 +157,17 @@ export async function runClaudeCode(options: ClaudeCodeOptions): Promise<ClaudeC
       (options.role !== undefined && options.role !== 'plan-review')) {
     return failure('arguments', 'Provide --cwd, --access none|read-only, a positive --timeout-ms, and a nonempty prompt on stdin.');
   }
-  const env = options.env ?? process.env;
-  const command = resolveClaudeCommand(env);
+  // Fork: on the LiteLLM lane Claude Code talks to the gateway with the lane key and model.
+  const command = resolveClaudeCommand(options.env ?? process.env);
   if (!command) return failure('not-found', 'Claude Code CLI not found. Install Claude Code or set GSTACK_CLAUDE_BIN, then retry.', true);
+  const lane = resolveLane(options.env ?? process.env);
+  if (!lane.ready) return failure('lane', `LiteLLM lane unavailable: ${lane.problem}. No Claude Code call was made; outside coverage is unavailable. Repair: ${lane.repair}`, true);
+  const env = claudeLaneEnv(lane, options.env ?? process.env);
   let selection = options.selection;
   if (!selection && options.role === 'plan-review') {
     try {
-      selection = resolvePlanReviewModel({ provider: 'anthropic', env, cwd: options.cwd });
+      const laneModel = lane.mode === 'litellm' && !env.GSTACK_CLAUDE_MODEL ? lane.model : undefined;
+      selection = resolvePlanReviewModel({ provider: 'anthropic', requestedModel: laneModel, env, cwd: options.cwd });
     } catch (error) {
       if (!(error instanceof ModelPolicyError)) throw error;
       return failure(error.reason, `${error.problem} ${error.cause} Repair: ${error.repair.join('; ')}. ${error.docs} No Claude Code call was made; outside coverage is unavailable.`, true);

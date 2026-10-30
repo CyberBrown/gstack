@@ -6,6 +6,8 @@ import * as path from 'path';
 import { ALL_MODEL_NAMES, resolveModel, type Model } from './models';
 import { ModelPolicyError, resolvePlanReviewModel, selectionRepair, type ModelSelection } from '../lib/model-policy';
 import { emitModelPolicyNotice } from '../lib/model-policy-notice';
+import { resolveLane } from '../lib/llm-lane';
+
 
 export interface CodexGenerationModelResolution {
   model: Model;
@@ -117,6 +119,18 @@ export interface CodexRuntimeModelSelection {
 /** Characters a model id may carry before it is interpolated into `-c "model=\"…\""`. */
 export const CODEX_RUNTIME_MODEL_PATTERN = /^[A-Za-z0-9._:/-]{1,100}$/;
 
+/**
+ * Fork (CyberBrown/gstack): on the LiteLLM lane (lib/llm-lane.ts) the model is
+ * the lane profile's. An unusable lane throws rather than falling back to a
+ * direct model, so the call is missing coverage, never an off-lane send.
+ */
+function laneModel(env: Record<string, string | undefined>): { model: string; source: string } | undefined {
+  const lane = resolveLane(env);
+  if (lane.mode === 'direct') return undefined;
+  if (!lane.ready) throw new Error(`LiteLLM lane unavailable: ${lane.problem}. No Codex call was made. Repair: ${lane.repair}`);
+  return { model: lane.model!, source: `LiteLLM lane (${lane.codexProfile} profile)` };
+}
+
 const REPAIR = 'Choose a model your Codex account can use: name it for this request, set GSTACK_CODEX_MODEL=<model>, or set model in the Codex config.toml.';
 
 /**
@@ -145,6 +159,8 @@ export function resolveCodexRuntimeModel(opts: {
   };
   if (opts.explicit) return chosen('explicit request', opts.explicit);
   if (env.GSTACK_CODEX_MODEL) return chosen('GSTACK_CODEX_MODEL', env.GSTACK_CODEX_MODEL);
+  const lane = laneModel(env);
+  if (lane) return chosen(lane.source, lane.model);
 
   const home = opts.home ?? env.HOME ?? os.homedir();
   const codexHome = opts.codexHome ?? env.CODEX_HOME ?? path.join(home, '.codex');
@@ -204,7 +220,12 @@ export function resolveCodexPlanReviewModel(opts: {
   cwd?: string;
 }): CodexPlanReviewSelection {
   const env = opts.env ?? process.env;
-  const selection = resolvePlanReviewModel({ provider: 'openai', requestedModel: opts.explicit || undefined, env, cwd: opts.cwd });
+  // The LiteLLM lane serves its own logical model; the public catalog ID is never sent to it.
+  const lane = !opts.explicit && !env.GSTACK_CODEX_MODEL ? laneModel(env) : undefined;
+  const selection = resolvePlanReviewModel({ provider: 'openai', requestedModel: opts.explicit || lane?.model || undefined, env, cwd: opts.cwd });
+  if (lane && selection.status === 'selected') {
+    return { kind: opts.kind, model: lane.model, source: stripControl(lane.source), selection: { ...selection, source: { ...selection.source, label: lane.source } }, repair: stripControl(selectionRepair(selection).join('; ')) };
+  }
   const repair = stripControl(selectionRepair(selection).join('; '));
   if (selection.status === 'selected') {
     const model = selection.requestedModel;

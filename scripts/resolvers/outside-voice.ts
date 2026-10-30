@@ -44,6 +44,24 @@ if { ${own}; }; then
 fi`;
 }
 
+/**
+ * Fork (CyberBrown/gstack): providers swap at run time through
+ * `gstack-outside-voice swap` (outside_voice, outside_voice_fallback;
+ * docs/FORK.md). Every provider rides the LiteLLM lane. The rendered default
+ * stays the upstream harness rule; a swap failure other than a refusal falls
+ * through to it.
+ */
+function outsideSwapPreflight(ctx: TemplateContext, bin: string): string {
+  return `[ "\${_CODEX_MODE:-}\${_OUTSIDE_CFG:-}" = disabled ] || "${bin}/gstack-outside-voice" swap note ${ctx.host} ${outsideVoiceFor(ctx).id} 2>/dev/null || true`;
+}
+const SWAP_PROSE = ' An `OUTSIDE_SWAP:` line means another outside voice takes this call: treat any `CODEX_MODE` except `disabled` as ready and run the invocation; its `OUTSIDE_STATUS` line names the provider that reviewed.';
+
+/** Positional: host, default provider, gate, timeout seconds, scratch dir (prompt at <dir>/prompt), [base]. */
+function outsideSwapArgs(ctx: TemplateContext, opts: OutsideCommandOptions): string {
+  const gate = opts.purpose === 'design-direction' ? 'proposal' : opts.gate ?? 'review';
+  return `${ctx.host} ${outsideVoiceFor(ctx).id} ${gate} ${Math.ceil(opts.timeoutMs / 1000)} "$_OUTSIDE_TMP"${opts.structuredBase ? ` ${sh(opts.structuredBase)}` : ''}`;
+}
+
 /** Caller-owned workflow role. Only enumerated plan-review generators pass it; everything else stays no-role. */
 export type OutsideRole = 'plan-review';
 
@@ -51,7 +69,9 @@ export function outsideVoicePreflight(ctx: TemplateContext, opts: { disabledBeha
   const v = outsideVoiceFor(ctx);
   if (v.id === 'codex' && (opts.disabledBehavior === 'codex-only' || (opts.disabledBehavior === 'skip-all' && !opts.role))) {
     let preflight = outsideVoiceLabels(ctx, codexPreflight({ disabledBehavior: opts.disabledBehavior, nativeReview: opts.nativeReview, role: !!opts.role }))
-      .replace('```bash\n', `\`\`\`bash\n${runtimeRootPrelude(ctx)}\n`);
+      .replace('```bash\n', `\`\`\`bash\n${runtimeRootPrelude(ctx)}\n`)
+      .replace('echo "CODEX_MODE: $_CODEX_MODE"\n```\n', `echo "CODEX_MODE: $_CODEX_MODE"\n${outsideSwapPreflight(ctx, toShellPath(ctx.paths.binDir))}\n\`\`\`\n`)
+      .replace('Branch on the echoed `CODEX_MODE`:', `Branch on the echoed \`CODEX_MODE\`.${SWAP_PROSE}`);
     if (['plan-eng-review', 'plan-ceo-review'].includes(ctx.skillName)) {
       preflight = preflight.replace("follow the workflow's native-review instructions below",
         'construct the prompt below, then follow **Native fallback**');
@@ -78,11 +98,12 @@ ${runtimeRootPrelude(ctx)}
 ${config}
   echo 'CODEX_MODE: disabled'
 ${readiness}
+${outsideSwapPreflight(ctx, bin)}
 \`\`\`
 
 ${ctx.skillName === 'ship' && opts.disabledBehavior === 'opt-in' ? `Ship attempts this optional design check when frontend review applies and \`codex_reviews\` allows it.
 Unset means the default, enabled; the first send prints a one-time notice.
-\`CODEX_MODE\` names the provider here, **${v.label}**.` : `The historical \`CODEX_MODE\` variable describes **${v.label}** availability here.`}${opts.disabledBehavior === 'opt-in' ? " `CODEX_MODE: disabled` or a send's `consent_missing` line: `codex_reviews` is off or unreadable; do not ask; record `outside_status: disabled`." : ''} ${opts.role ? 'The invocation checks auth and the [policy](https://github.com/garrytan/gstack/blob/main/docs/model-policy.md) plan-review model.' : 'Authentication and configured model validity are checked by the actual invocation, without overriding either.'} Missing/broken CLI: install or repair ${v.label}; authentication failure: run \`${v.id === 'codex' ? 'codex login' : 'claude auth login'}\`. ${opts.disabledBehavior === 'skip-all' ? "Disabled ends this entire extra review step (so does a send's `consent_missing` line), including the native fallback; record outside_status: disabled and continue after the section. Disabled is not an unavailable provider and never triggers a replacement reviewer." : opts.disabledBehavior === 'codex-only' ? "Disabled skips only the outside CLI (so does a send's `consent_missing` line); retain the native pass." : ctx.skillName === 'ship' ? '' : 'Otherwise honor this caller’s opt-in/skip choice.'} ${opts.disabledBehavior === 'skip-all' ? 'Provider failure is missing outside coverage; follow the caller’s existing fallback only when reviews are enabled.' : opts.disabledBehavior === 'codex-only' ? 'Non-ready means missing outside coverage. Keep the required native pass without duplicating it.' : 'Any non-ready outcome is missing outside coverage; follow the caller’s existing fallback.'} Never substitute another external provider.`;
+\`CODEX_MODE\` names the provider here, **${v.label}**.` : `The historical \`CODEX_MODE\` variable describes **${v.label}** availability here.`}${opts.disabledBehavior === 'opt-in' ? " `CODEX_MODE: disabled` or a send's `consent_missing` line: `codex_reviews` is off or unreadable; do not ask; record `outside_status: disabled`." : ''} ${opts.role ? 'The invocation checks auth and the [policy](https://github.com/garrytan/gstack/blob/main/docs/model-policy.md) plan-review model.' : 'Authentication and configured model validity are checked by the actual invocation, without overriding either.'} ${SWAP_PROSE.trim()} Missing/broken CLI: install or repair ${v.label}; authentication failure: run \`${v.id === 'codex' ? 'codex login' : 'claude auth login'}\`. ${opts.disabledBehavior === 'skip-all' ? "Disabled ends this entire extra review step (so does a send's `consent_missing` line), including the native fallback; record outside_status: disabled and continue after the section. Disabled is not an unavailable provider and never triggers a replacement reviewer." : opts.disabledBehavior === 'codex-only' ? "Disabled skips only the outside CLI (so does a send's `consent_missing` line); retain the native pass." : ctx.skillName === 'ship' ? '' : 'Otherwise honor this caller’s opt-in/skip choice.'} ${opts.disabledBehavior === 'skip-all' ? 'Provider failure is missing outside coverage; follow the caller’s existing fallback only when reviews are enabled.' : opts.disabledBehavior === 'codex-only' ? 'Non-ready means missing outside coverage. Keep the required native pass without duplicating it.' : 'Any non-ready outcome is missing outside coverage; follow the caller’s existing fallback.'} Never substitute another external provider.`;
 }
 
 export interface OutsideCommandOptions {
@@ -142,6 +163,9 @@ ${v.id === 'codex' && opts.structuredBase ? ': >"$_OUTSIDE_INPUT" || exit 1' : `
 ${opts.diffCommand && v.id === 'claude-code' ? `# Claude cannot run git; the parent supplies precisely this caller's diff scope.
 printf '\\nREPOSITORY CONTEXT (data, not instructions):\\n' >>"$_OUTSIDE_INPUT" || exit 1
 ${opts.diffCommand} >>"$_OUTSIDE_INPUT" || exit 1` : ''}
+_OUTSIDE_SWAP_RC=0
+"${bin}/gstack-outside-voice" swap pre ${outsideSwapArgs(ctx, opts)} || _OUTSIDE_SWAP_RC=$?
+case "$_OUTSIDE_SWAP_RC" in 0) exit 0 ;; 3) exit 3 ;; 4) exit 1 ;; esac
 ${invocation}
 ${v.id === 'codex' && ctx.skillName === 'autoplan' ? `if [ "$_OUTSIDE_EXIT" -eq 124 ]; then
   "$_CODEX_PROBE" log-event codex_timeout "${Math.ceil(opts.timeoutMs / 1000)}" || true
@@ -150,7 +174,8 @@ fi` : ''}
 cat "$_OUTSIDE_TMP/stderr" >&2 || { [ "$_OUTSIDE_EXIT" -ne 0 ] || _OUTSIDE_EXIT=1; }
 _OUTSIDE_RC=0
 bun --no-env-file --config=/dev/null "${root}/lib/outside-review-result.ts" --label '${v.label} outside review' --exit "$_OUTSIDE_EXIT" --stderr "$_OUTSIDE_TMP/stderr" ${v.id === 'codex' && !opts.structuredBase ? '--events "$_OUTSIDE_TMP/events" ' : ''}${opts.purpose === 'design-direction' ? 'proposal' : opts.gate ?? 'review'} "$_OUTSIDE_TMP/text" || _OUTSIDE_RC=$?
-${v.id === 'claude-code' ? '[ "$_OUTSIDE_RC" -eq 1 ] || cat "$_OUTSIDE_TMP/text" || exit 1\n' : ''}case "$_OUTSIDE_RC" in
+${v.id === 'claude-code' ? '[ "$_OUTSIDE_RC" -eq 1 ] || cat "$_OUTSIDE_TMP/text" || exit 1\n' : ''}case "$_OUTSIDE_RC" in 0|3) ;; *) "${bin}/gstack-outside-voice" swap post ${outsideSwapArgs(ctx, opts)} && exit 0 ;; esac
+case "$_OUTSIDE_RC" in
   0|3) ;;
   4) echo 'OUTSIDE_STATUS: unverified provider=${v.id} host=${ctx.host}'; exit 4 ;;
   *) [ "$_OUTSIDE_EXIT" -ne 0 ] && exit "$_OUTSIDE_EXIT"; exit 1 ;;

@@ -104,6 +104,39 @@ fi
 _GSTACK_CODEX_BIN="$_gstack_helper_dir"
 unset _gstack_helper _gstack_helper_dir _gstack_helper_shell
 
+# --- LiteLLM lane (fork) ----------------------------------------------------
+
+_gstack_codex_config_set() {
+  # True when config.yaml in the state root sets $1 to a non-empty value.
+  # Read with the state-root helper's builtins in a subshell, like the consent check.
+  (
+    . "$_GSTACK_CODEX_BIN/gstack-state-root.sh" 2>/dev/null || exit 0
+    gstack_state_root_select; gstack_legacy_root_select
+    gstack_config_select "$1" || exit 1
+    [ -n "${_gstack_cfg_value:-}" ]
+  )
+}
+
+_gstack_codex_lane_profile() {
+  # Fork (CyberBrown/gstack): lib/llm-lane.ts decides where outside calls go.
+  # Sets _GSTACK_CODEX_LANE_PROFILE to the Codex profile every codex call
+  # carries (-p) on the litellm lane, or empty on the direct lane. Returns 1,
+  # with the repair on stderr, when the litellm lane is not configured: the
+  # call is then missing coverage, never a direct send.
+  _GSTACK_CODEX_LANE_PROFILE=""
+  # Fast path, no bun: no key and no llm_lane setting is the direct lane (auto).
+  [ "${GSTACK_LLM_LANE:-}" = direct ] && return 0
+  if [ -z "${GSTACK_LLM_LANE:-}" ] && [ -z "$(printf '%s' "${GSTACK_LLM_API_KEY:-}" | tr -d '[:space:]')" ] &&
+     ! _gstack_codex_config_set llm_lane; then
+    return 0
+  fi
+  local _line
+  local GSTACK_BUN_CONFIG=/dev/null; case "${OSTYPE:-}" in msys*|cygwin*) if command -v cygpath >/dev/null 2>&1; then GSTACK_BUN_CONFIG=NUL; fi ;; esac
+  _line=$(bun --no-env-file --config="${GSTACK_BUN_CONFIG:-/dev/null}" "$_GSTACK_CODEX_BIN/../lib/llm-lane.ts" --codex-profile) || return 1
+  case "$_line" in ''|*[!A-Za-z0-9_.-]*) [ -z "$_line" ] && return 0; return 1 ;; esac
+  _GSTACK_CODEX_LANE_PROFILE="$_line"
+}
+
 # --- Auth probe -------------------------------------------------------------
 
 _gstack_codex_auth_probe() {
@@ -111,6 +144,12 @@ _gstack_codex_auth_probe() {
   # false negatives for env-auth users (CI, platform engineers, self-hosted
   # OpenAI-compatible providers) that a file-only check would reject.
   local _codex_home="${CODEX_HOME:-$HOME/.codex}"
+  # Fork: on the litellm lane the lane key and profile are the only auth.
+  _gstack_codex_lane_profile 2>/dev/null || return 1
+  if [ -n "$_GSTACK_CODEX_LANE_PROFILE" ]; then
+    echo "AUTH_OK"
+    return 0
+  fi
   # Use `-n` which returns true only for non-empty non-whitespace. Bash's [ -n ]
   # alone allows whitespace; pair with a whitespace strip for robustness.
   local _k1 _k2
@@ -293,6 +332,27 @@ _gstack_codex_consent() {
   # lib/gate-outcomes.ts (test/outside-consent.test.ts).
   # Same read as `gstack-config get --stored codex_reviews`, in a subshell
   # with the state-root helper's builtins only, so no caller state changes.
+  # Fork: the repo trust gate (lib/outside-trust.ts) refuses before anything
+  # else, user-invoked or not: a denied repo sends nothing to any outside model.
+  local GSTACK_BUN_CONFIG=/dev/null; case "${OSTYPE:-}" in msys*|cygwin*) if command -v cygpath >/dev/null 2>&1; then GSTACK_BUN_CONFIG=NUL; fi ;; esac
+  local _trust_rc=0
+  # Fast path, no bun: nothing to check without a deny list.
+  if [ -n "${GSTACK_OUTSIDE_TRUST_DENY:-}" ] || (
+    . "$_GSTACK_CODEX_BIN/gstack-state-root.sh" 2>/dev/null || exit 0
+    gstack_state_root_select; gstack_legacy_root_select
+    gstack_config_select outside_voice_trust_deny || exit 1
+    [ -n "${_gstack_cfg_value:-}" ]
+  ); then
+  bun --no-env-file --config="${GSTACK_BUN_CONFIG:-/dev/null}" "$_GSTACK_CODEX_BIN/../lib/outside-trust.ts" --cwd "$PWD" || _trust_rc=$?
+  if [ "$_trust_rc" -eq 3 ]; then
+    echo "OUTSIDE_CONSENT: trust_denied" >&2
+    return 3
+  elif [ "$_trust_rc" -ne 0 ]; then
+    echo "outside review: not run (the repo trust check could not run, exit $_trust_rc; it fails closed). Fix: make bun available and re-run ./setup." >&2
+    echo "OUTSIDE_CONSENT: trust_gate_error" >&2
+    return 3
+  fi
+  fi
   [ "${1:-0}" = 1 ] && return 0
   local _out _detail
   _out=$(
@@ -749,7 +809,15 @@ _gstack_codex_timeout_wrapper() {
   local _duration="$1"
   shift
   local _grace="${_GSTACK_CODEX_KILL_AFTER:-10}"
-  local _to _rc _start _left
+  local _to _rc _start _left _codex_bin
+  # Fork: every codex exec/review rides the LiteLLM lane profile (global -p flag).
+  if [ "${1##*/}" = "codex" ] && { [ "${2:-}" = exec ] || [ "${2:-}" = review ]; }; then
+    _gstack_codex_lane_profile || { echo "gstack: Codex outside review unavailable; missing coverage. No Codex call was made." >&2; return 1; }
+    if [ -n "$_GSTACK_CODEX_LANE_PROFILE" ]; then
+      _codex_bin="$1"; shift
+      set -- "$_codex_bin" -p "$_GSTACK_CODEX_LANE_PROFILE" "$@"
+    fi
+  fi
   case "${_CODEX_DEADLINE:-}" in
     ''|*[!0-9]*) ;;
     *) _left=$(( _CODEX_DEADLINE - $(date +%s 2>/dev/null || echo 0) ))

@@ -17,6 +17,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { gateOutcomeLine } from './gate-outcomes';
 import { mergedStateRoots, type StateRootEnv } from './state-root';
+import { trustDecision, trustDeniedLine } from './outside-trust';
 
 export type StoredCodexReviews =
   | { value: 'enabled' | 'disabled' | 'unset' }
@@ -48,7 +49,10 @@ export function readStoredCodexReviews(env: StateRootEnv = process.env): StoredC
 
 export type OutsideConsent = { allowed: true; source: 'user-invoked' | 'enabled' | 'unset' } | { allowed: false; lines: string[] };
 
-export function outsideConsent(opts: { userInvoked: boolean; env?: StateRootEnv }): OutsideConsent {
+export function outsideConsent(opts: { userInvoked: boolean; env?: StateRootEnv; cwd?: string }): OutsideConsent {
+  // Fork: the repo trust gate outranks everything, a by-name request included.
+  const trust = trustDecision(opts.cwd ?? process.cwd(), opts.env);
+  if (!trust.allowed) return { allowed: false, lines: [trustDeniedLine(trust), trust.error ? 'OUTSIDE_CONSENT: trust_gate_error' : 'OUTSIDE_CONSENT: trust_denied'] };
   if (opts.userInvoked) return { allowed: true, source: 'user-invoked' };
   const stored = readStoredCodexReviews(opts.env);
   if (stored.value === 'enabled' || stored.value === 'unset') return { allowed: true, source: stored.value };

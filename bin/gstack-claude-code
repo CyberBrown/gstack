@@ -7,7 +7,8 @@ import { outsideConsent } from '../lib/outside-consent';
 
 const argv = process.argv.slice(2);
 const userInvoked = argv.includes('--user-invoked');
-const consent = outsideConsent({ userInvoked });
+const cwdAt = argv.indexOf('--cwd');
+const consent = outsideConsent({ userInvoked, cwd: cwdAt >= 0 ? argv[cwdAt + 1] : undefined });
 if (!consent.allowed) {
   process.stderr.write(consent.lines.join('\n') + '\n');
   process.stdout.write(JSON.stringify({ status: 'not_run', reason: 'consent_missing', stderr: consent.lines.join('\n') }) + '\n');
