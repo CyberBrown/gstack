@@ -205,6 +205,23 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 #                           #   the same model; every reviewer keeps full.
 # Docs: docs/model-policy.md
 #
+# ─── Outside voices (CyberBrown fork; docs/FORK.md) ─────────────────
+# llm_lane: auto            # auto (default): litellm when GSTACK_LLM_API_KEY is set, else
+#                           #   direct. Strict machines export GSTACK_LLM_LANE=litellm.
+#                           #   litellm: every outside call goes through the LiteLLM gateway
+#                           #   with GSTACK_LLM_API_KEY, or does not run.
+#                           #   direct: each provider uses its own auth (upstream).
+# outside_voice: auto       # auto | codex | claude-code | hermes: who reviews; auto keeps
+#                           #   the harness rule (env GSTACK_OUTSIDE_VOICE wins)
+# outside_voice_fallback: auto
+#                           # auto | none | codex | claude-code | hermes: who takes over
+#                           #   when that voice cannot run or fails (env GSTACK_OUTSIDE_FALLBACK)
+# hermes_profile: gstack-reviewer
+#                           # Hermes profile for the Hermes voice (env GSTACK_HERMES_PROFILE)
+# outside_voice_trust_deny: # colon-separated path globs, no spaces, e.g.
+#                           #   ~/projects/52L/*:~/clients/* — nothing goes to any outside
+#                           #   voice from a repo under them. Empty = allow all.
+#
 # ─── Advanced ────────────────────────────────────────────────────────
 # codex_reviews: enabled    # Outside review (Codex or Claude Code by harness): sends
 #                           #   the review prompt and repository content to that model.
@@ -306,6 +323,11 @@ lookup_default() {
     explain_level) echo "default" ;;
     plan_mode_preamble) echo "on" ;; # on | off — off drops the plan-mode preamble on the next ./setup (#3168)
     codex_reviews) echo "enabled" ;;
+    llm_lane) echo "auto" ;;
+    outside_voice) echo "auto" ;;
+    outside_voice_fallback) echo "auto" ;;
+    hermes_profile) echo "gstack-reviewer" ;;
+    outside_voice_trust_deny) echo "" ;;
     design_detector) echo "auto" ;; # auto | off — impeccable engine pre-pass in the design skills
     design_detector_install_prompted) echo "false" ;; # true once the user answered the one-time engine install offer with "never ask again"
     gstack_contributor) echo "false" ;;
@@ -823,6 +845,25 @@ $_gstack_legacy_root"
       echo "Error: codex_reviews '$VALUE' not recognized. Valid values: enabled, disabled. Existing value left unchanged." >&2
       exit 1
     fi
+    # Fork outside-voice keys route repository content: reject typos, never coerce.
+    _fork_valid=""
+    case "$KEY" in
+      llm_lane) _fork_valid="auto litellm direct" ;;
+      outside_voice) _fork_valid="auto codex claude-code hermes" ;;
+      outside_voice_fallback) _fork_valid="auto none codex claude-code hermes" ;;
+    esac
+    if [ -n "$_fork_valid" ] && ! printf ' %s ' "$_fork_valid" | grep -qF " $VALUE "; then
+      echo "Error: $KEY '$VALUE' not recognized. Valid values: $_fork_valid. Existing value left unchanged." >&2
+      exit 1
+    fi
+    if [ "$KEY" = "hermes_profile" ] && ! printf '%s' "$VALUE" | grep -qE '^[A-Za-z0-9_.-]{1,64}$'; then
+      echo "Error: hermes_profile '$VALUE' must be a plain profile name. Existing value left unchanged." >&2
+      exit 1
+    fi
+    if [ "$KEY" = "outside_voice_trust_deny" ] && printf '%s' "$VALUE" | grep -q '[[:space:]]'; then
+      echo "Error: outside_voice_trust_deny takes colon-separated globs with no spaces. Existing value left unchanged." >&2
+      exit 1
+    fi
     # codex_effort feeds model_reasoning_effort on paid Codex calls: reject a
     # typo instead of coercing it (the probe refuses an invalid stored value too).
     if [ "$KEY" = "review_effort_tiers" ] && [ "$VALUE" != "on" ] && [ "$VALUE" != "off" ]; then
@@ -1079,7 +1120,8 @@ $_gstack_legacy_root"
     report_root_disagreement
     for KEY in proactive routing_declined telemetry auto_upgrade update_check update_channel \
                skill_prefix explain_level plan_mode_preamble \
-               codex_reviews gstack_contributor skip_eng_review workspace_root \
+               codex_reviews llm_lane outside_voice outside_voice_fallback hermes_profile outside_voice_trust_deny \
+               gstack_contributor skip_eng_review workspace_root \
                artifacts_sync_mode artifacts_sync_mode_prompted artifacts_sync_removals plan_tune_hooks \
                timeline_stop_hook design_detector design_detector_install_prompted memorable_recall \
                browse_extension_id ship_measure_rule_trials ship_measure_behavior_panels \
@@ -1104,7 +1146,8 @@ $_gstack_legacy_root"
     echo "# gstack-config defaults"
     for KEY in proactive routing_declined telemetry auto_upgrade update_check update_channel \
                skill_prefix explain_level plan_mode_preamble \
-               codex_reviews gstack_contributor skip_eng_review workspace_root \
+               codex_reviews llm_lane outside_voice outside_voice_fallback hermes_profile outside_voice_trust_deny \
+               gstack_contributor skip_eng_review workspace_root \
                artifacts_sync_mode artifacts_sync_mode_prompted artifacts_sync_removals plan_tune_hooks \
                timeline_stop_hook design_detector design_detector_install_prompted memorable_recall \
                browse_extension_id ship_measure_rule_trials ship_measure_behavior_panels \
