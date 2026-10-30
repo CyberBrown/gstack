@@ -521,9 +521,10 @@ else
   fi
 fi
 echo "CODEX_MODE: $_CODEX_MODE"
+[ "${_CODEX_MODE:-}${_OUTSIDE_CFG:-}" = disabled ] || "$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap note claude codex 2>/dev/null || true
 ```
 
-Branch on the echoed `CODEX_MODE`:
+Branch on the echoed `CODEX_MODE`. An `OUTSIDE_SWAP:` line means another outside voice takes this call: treat any `CODEX_MODE` except `disabled` as ready and run the invocation; its `OUTSIDE_STATUS` line names the provider that reviewed.
 - **`disabled`** (or a send's `consent_missing` line) — `codex_reviews` is off or unreadable. Skip the Codex passes only; the Claude adversarial subagent below STILL runs (it is free and fast). Print: "Codex passes skipped (codex_reviews disabled) — running Claude adversarial only."
 - **`helper_unavailable`** — the probe is missing or not executable; relay the line above (cause and fix). Keep the required Claude adversarial pass; do not dispatch a duplicate.
 - **`not_installed`** — Codex CLI absent. Print: "Codex not installed; outside coverage unavailable. Install: `npm install -g @openai/codex`." Keep the required Claude adversarial pass; do not dispatch a duplicate.

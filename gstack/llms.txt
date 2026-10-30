@@ -34,6 +34,7 @@ Conventions:
 - [/eval-plan](eval-plan/SKILL.md): Preregister a paid eval (bars, arms, decoys, stop rules), dry-run it at zero cost, then run a three-item priced pilot whose spend table gates approval.
 - [/freeze](freeze/SKILL.md): Restrict file edits to a specific directory for the session.
 - [/gstack](SKILL.md): Router for the gstack skill suite.
+- [/gstack-fork-sync](gstack-fork-sync/SKILL.md): Sync the CyberBrown/gstack fork with upstream garrytan/gstack: fetch-only upstream remote, a sync branch cut from upstream with the fork delta re-applied as small commits, upstream-diff supply-chain review, tests, PR into the fork's default branch, tag, install verification.
 - [/gstack-upgrade](gstack-upgrade/SKILL.md): Upgrade gstack to the latest version.
 - [/guard](guard/SKILL.md): Full safety mode: destructive command warnings + directory-scoped edits.
 - [/health](health/SKILL.md): Code quality dashboard.

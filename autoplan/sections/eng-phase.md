@@ -64,6 +64,9 @@ trap 'rm -rf "$_OUTSIDE_TMP"' EXIT
 _OUTSIDE_INPUT="$_OUTSIDE_TMP/prompt"
 cat -- '<prepared-prompt-file>' >"$_OUTSIDE_INPUT" || exit 1
 
+_OUTSIDE_SWAP_RC=0
+"$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap pre claude codex review 540 "$_OUTSIDE_TMP" || _OUTSIDE_SWAP_RC=$?
+case "$_OUTSIDE_SWAP_RC" in 0) exit 0 ;; 3) exit 3 ;; 4) exit 1 ;; esac
 _CODEX_PROBE="$HOME/.claude/skills/gstack/bin/gstack-codex-probe"
 export _CODEX_DEADLINE=$(($(date +%s)+540)); _CODEX_OUT=$("$_CODEX_PROBE" role-ready exec) || exit $?
 _CODEX_SEL=$(echo "$_CODEX_OUT" | sed -n 's/^CODEX_SEL: //p')
@@ -79,6 +82,7 @@ fi
 cat "$_OUTSIDE_TMP/stderr" >&2 || { [ "$_OUTSIDE_EXIT" -ne 0 ] || _OUTSIDE_EXIT=1; }
 _OUTSIDE_RC=0
 bun --no-env-file --config=/dev/null "$HOME/.claude/skills/gstack/lib/outside-review-result.ts" --label 'Codex outside review' --exit "$_OUTSIDE_EXIT" --stderr "$_OUTSIDE_TMP/stderr" --events "$_OUTSIDE_TMP/events" review "$_OUTSIDE_TMP/text" || _OUTSIDE_RC=$?
+case "$_OUTSIDE_RC" in 0|3) ;; *) "$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap post claude codex review 540 "$_OUTSIDE_TMP" && exit 0 ;; esac
 case "$_OUTSIDE_RC" in
   0|3) ;;
   4) echo 'OUTSIDE_STATUS: unverified provider=codex host=claude'; exit 4 ;;

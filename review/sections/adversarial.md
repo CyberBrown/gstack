@@ -57,9 +57,10 @@ else
   fi
 fi
 echo "CODEX_MODE: $_CODEX_MODE"
+[ "${_CODEX_MODE:-}${_OUTSIDE_CFG:-}" = disabled ] || "$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap note claude codex 2>/dev/null || true
 ```
 
-Branch on the echoed `CODEX_MODE`:
+Branch on the echoed `CODEX_MODE`. An `OUTSIDE_SWAP:` line means another outside voice takes this call: treat any `CODEX_MODE` except `disabled` as ready and run the invocation; its `OUTSIDE_STATUS` line names the provider that reviewed.
 - **`disabled`** (or a send's `consent_missing` line) — `codex_reviews` is off or unreadable. Skip the Codex passes only; the Claude adversarial subagent below STILL runs (it is free and fast). Print: "Codex passes skipped (codex_reviews disabled) — running Claude adversarial only."
 - **`helper_unavailable`** — the probe is missing or not executable; relay the line above (cause and fix). Keep the required Claude adversarial pass; do not dispatch a duplicate.
 - **`not_installed`** — Codex CLI absent. Print: "Codex not installed; outside coverage unavailable. Install: `npm install -g @openai/codex`." Keep the required Claude adversarial pass; do not dispatch a duplicate.
@@ -132,6 +133,9 @@ trap 'rm -rf "$_OUTSIDE_TMP"' EXIT
 _OUTSIDE_INPUT="$_OUTSIDE_TMP/prompt"
 cat -- '<prepared-prompt-file>' >"$_OUTSIDE_INPUT" || exit 1
 
+_OUTSIDE_SWAP_RC=0
+"$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap pre claude codex review 540 "$_OUTSIDE_TMP" || _OUTSIDE_SWAP_RC=$?
+case "$_OUTSIDE_SWAP_RC" in 0) exit 0 ;; 3) exit 3 ;; 4) exit 1 ;; esac
 _CODEX_PROBE="$HOME/.claude/skills/gstack/bin/gstack-codex-probe"
 _CODEX_OUT=$("$_CODEX_PROBE" select-model exec) || exit 1
 _CODEX_SEL=$(echo "$_CODEX_OUT" | sed -n 's/^CODEX_SEL: //p')
@@ -145,6 +149,7 @@ cat "$_OUTSIDE_TMP/text" 2>/dev/null || tail -n 20 "$_OUTSIDE_TMP/events"
 cat "$_OUTSIDE_TMP/stderr" >&2 || { [ "$_OUTSIDE_EXIT" -ne 0 ] || _OUTSIDE_EXIT=1; }
 _OUTSIDE_RC=0
 bun --no-env-file --config=/dev/null "$HOME/.claude/skills/gstack/lib/outside-review-result.ts" --label 'Codex outside review' --exit "$_OUTSIDE_EXIT" --stderr "$_OUTSIDE_TMP/stderr" --events "$_OUTSIDE_TMP/events" review "$_OUTSIDE_TMP/text" || _OUTSIDE_RC=$?
+case "$_OUTSIDE_RC" in 0|3) ;; *) "$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap post claude codex review 540 "$_OUTSIDE_TMP" && exit 0 ;; esac
 case "$_OUTSIDE_RC" in
   0|3) ;;
   4) echo 'OUTSIDE_STATUS: unverified provider=codex host=claude'; exit 4 ;;
@@ -194,6 +199,9 @@ trap 'rm -rf "$_OUTSIDE_TMP"' EXIT
 _OUTSIDE_INPUT="$_OUTSIDE_TMP/prompt"
 : >"$_OUTSIDE_INPUT" || exit 1
 
+_OUTSIDE_SWAP_RC=0
+"$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap pre claude codex structured 540 "$_OUTSIDE_TMP" '<base>' || _OUTSIDE_SWAP_RC=$?
+case "$_OUTSIDE_SWAP_RC" in 0) exit 0 ;; 3) exit 3 ;; 4) exit 1 ;; esac
 _CODEX_PROBE="$HOME/.claude/skills/gstack/bin/gstack-codex-probe"
 _CODEX_OUT=$("$_CODEX_PROBE" select-model review) || exit 1
 _CODEX_SEL=$(echo "$_CODEX_OUT" | sed -n 's/^CODEX_SEL: //p')
@@ -207,6 +215,7 @@ cat "$_OUTSIDE_TMP/text"
 cat "$_OUTSIDE_TMP/stderr" >&2 || { [ "$_OUTSIDE_EXIT" -ne 0 ] || _OUTSIDE_EXIT=1; }
 _OUTSIDE_RC=0
 bun --no-env-file --config=/dev/null "$HOME/.claude/skills/gstack/lib/outside-review-result.ts" --label 'Codex outside review' --exit "$_OUTSIDE_EXIT" --stderr "$_OUTSIDE_TMP/stderr" structured "$_OUTSIDE_TMP/text" || _OUTSIDE_RC=$?
+case "$_OUTSIDE_RC" in 0|3) ;; *) "$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap post claude codex structured 540 "$_OUTSIDE_TMP" '<base>' && exit 0 ;; esac
 case "$_OUTSIDE_RC" in
   0|3) ;;
   4) echo 'OUTSIDE_STATUS: unverified provider=codex host=claude'; exit 4 ;;

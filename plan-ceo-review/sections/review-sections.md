@@ -375,9 +375,10 @@ fi
 else
   echo 'CODEX_MODE: under_current_harness'
 fi
+[ "${_CODEX_MODE:-}${_OUTSIDE_CFG:-}" = disabled ] || "$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap note claude codex 2>/dev/null || true
 ```
 
-The historical `CODEX_MODE` variable describes **Codex** availability here. The invocation checks auth and the [policy](https://github.com/garrytan/gstack/blob/main/docs/model-policy.md) plan-review model. Missing/broken CLI: install or repair Codex; authentication failure: run `codex login`. Disabled ends this entire extra review step (so does a send's `consent_missing` line), including the native fallback; record outside_status: disabled and continue after the section. Disabled is not an unavailable provider and never triggers a replacement reviewer. Provider failure is missing outside coverage; follow the caller’s existing fallback only when reviews are enabled. Never substitute another external provider.
+The historical `CODEX_MODE` variable describes **Codex** availability here. The invocation checks auth and the [policy](https://github.com/garrytan/gstack/blob/main/docs/model-policy.md) plan-review model. An `OUTSIDE_SWAP:` line means another outside voice takes this call: treat any `CODEX_MODE` except `disabled` as ready and run the invocation; its `OUTSIDE_STATUS` line names the provider that reviewed. Missing/broken CLI: install or repair Codex; authentication failure: run `codex login`. Disabled ends this entire extra review step (so does a send's `consent_missing` line), including the native fallback; record outside_status: disabled and continue after the section. Disabled is not an unavailable provider and never triggers a replacement reviewer. Provider failure is missing outside coverage; follow the caller’s existing fallback only when reviews are enabled. Never substitute another external provider.
 
 **Outcome routing:** Follow the row for the current result. After an invocation, route its result
 again. Leave only after recording disabled/unavailable coverage, or after
@@ -476,6 +477,9 @@ trap 'rm -rf "$_OUTSIDE_TMP"' EXIT
 _OUTSIDE_INPUT="$_OUTSIDE_TMP/prompt"
 cat -- '<prepared-prompt-file>' >"$_OUTSIDE_INPUT" || exit 1
 
+_OUTSIDE_SWAP_RC=0
+"$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap pre claude codex review 300 "$_OUTSIDE_TMP" || _OUTSIDE_SWAP_RC=$?
+case "$_OUTSIDE_SWAP_RC" in 0) exit 0 ;; 3) exit 3 ;; 4) exit 1 ;; esac
 _CODEX_PROBE="$HOME/.claude/skills/gstack/bin/gstack-codex-probe"
 export _CODEX_DEADLINE=$(($(date +%s)+300)); _CODEX_OUT=$("$_CODEX_PROBE" role-ready exec) || exit $?
 _CODEX_SEL=$(echo "$_CODEX_OUT" | sed -n 's/^CODEX_SEL: //p')
@@ -488,6 +492,7 @@ cat "$_OUTSIDE_TMP/text" 2>/dev/null || tail -n 20 "$_OUTSIDE_TMP/events"
 cat "$_OUTSIDE_TMP/stderr" >&2 || { [ "$_OUTSIDE_EXIT" -ne 0 ] || _OUTSIDE_EXIT=1; }
 _OUTSIDE_RC=0
 bun --no-env-file --config=/dev/null "$HOME/.claude/skills/gstack/lib/outside-review-result.ts" --label 'Codex outside review' --exit "$_OUTSIDE_EXIT" --stderr "$_OUTSIDE_TMP/stderr" --events "$_OUTSIDE_TMP/events" review "$_OUTSIDE_TMP/text" || _OUTSIDE_RC=$?
+case "$_OUTSIDE_RC" in 0|3) ;; *) "$HOME/.claude/skills/gstack/bin/gstack-outside-voice" swap post claude codex review 300 "$_OUTSIDE_TMP" && exit 0 ;; esac
 case "$_OUTSIDE_RC" in
   0|3) ;;
   4) echo 'OUTSIDE_STATUS: unverified provider=codex host=claude'; exit 4 ;;
