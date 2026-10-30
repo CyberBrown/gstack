@@ -77,14 +77,15 @@ describe('model family rule', () => {
 describe('the runner table', () => {
   test('every runner declares capabilities; api is a supplied-input review, host-subagent does not execute here', () => {
     const table = runnerTable({ env: cleanEnv(emptyBin) });
-    expect(table.map(r => r.id)).toEqual(['codex-cli', 'api', 'host-subagent']);
+    // Fork: hermes and claude-code are the swap runners (docs/FORK.md).
+    expect(table.map(r => r.id)).toEqual(['codex-cli', 'api', 'host-subagent', 'hermes', 'claude-code']);
     expect(table.find(r => r.id === 'api')!.capabilities).toEqual({ repository_access: 'none', executes_here: true, label: 'supplied-input review' });
     expect(table.find(r => r.id === 'codex-cli')!.capabilities).toEqual({ repository_access: 'read-only', executes_here: true, label: 'repository review' });
     expect(table.find(r => r.id === 'host-subagent')!.capabilities).toEqual({ repository_access: 'host', executes_here: false, label: 'host-dispatched review' });
     expect(table.every(r => r.available === false)).toBe(true);
     const r = run(['runners', '--json'], cleanEnv(emptyBin));
     expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout).map((x: any) => x.id)).toEqual(['codex-cli', 'api', 'host-subagent']);
+    expect(JSON.parse(r.stdout).map((x: any) => x.id)).toEqual(['codex-cli', 'api', 'host-subagent', 'hermes', 'claude-code']);
   });
   test('--help prints the exit table', () => {
     const r = run(['--help'], cleanEnv(emptyBin));

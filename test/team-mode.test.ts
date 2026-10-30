@@ -459,7 +459,7 @@ describe('setup --team / --no-team / -q', () => {
         'scripts/resolve-codex-generation-model.ts', 'scripts/models.ts', 'scripts/preflight-codex-overlap.ts',
         'scripts/discover-skills.ts', 'scripts/external-skill-names.ts', 'scripts/host-config.ts',
         'lib/claude-code-migration.ts', 'lib/model-policy.ts', 'lib/model-catalog.ts',
-        'lib/model-policy-notice.ts', 'lib/state-root.ts', 'lib/bun-isolation.ts',
+        'lib/model-policy-notice.ts', 'lib/state-root.ts', 'lib/bun-isolation.ts', 'lib/llm-lane.ts',
       ]) {
         const dest = path.join(cwd, rel);
         fs.mkdirSync(path.dirname(dest), { recursive: true });

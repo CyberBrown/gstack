@@ -12,7 +12,7 @@ test('replacing the shipped catalog changes role choices, not eval rulers, overl
       'lib/model-catalog.ts', 'lib/model-policy.ts', 'lib/model-policy-notice.ts', 'lib/state-root.ts',
       'lib/eval-model.ts', 'lib/claude-code.ts', 'lib/claude-bin.ts', 'lib/claude-code-windows-job.ts',
       'lib/design-catalog.ts', 'scripts/resolve-codex-generation-model.ts', 'scripts/models.ts',
-      'scripts/resolvers/constants.ts', 'scripts/resolvers/model-overlay.ts',
+      'scripts/resolvers/constants.ts', 'scripts/resolvers/model-overlay.ts', 'lib/llm-lane.ts',
       ...fs.readdirSync(path.join(source, 'hosts')).filter(file => file.endsWith('.ts')).map(file => `hosts/${file}`),
       ...fs.readdirSync(path.join(source, 'model-overlays')).filter(file => file.endsWith('.md')).map(file => `model-overlays/${file}`),
     ];
