@@ -31,6 +31,7 @@ const DISCOVERY: Record<string, string> = {
   cursor: '.cursor/skills',
   copilot: '.copilot/skills',
   agy: '.gemini/antigravity-cli/skills',
+  muse: '.config/muse/skills',
 };
 /** Every directory any host (or a shared agents layout) reads; .gemini/skills is Gemini CLI's. */
 const ALL_DISCOVERY_DIRS = [...Object.values(DISCOVERY), '.agents/skills', '.copilot/skills', '.hermes/skills', '.gemini/skills'];

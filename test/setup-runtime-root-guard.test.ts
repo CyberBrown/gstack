@@ -72,7 +72,7 @@ describe.skipIf(process.platform === 'win32')('setup never replaces a runtime ro
     const fn = setup.slice(setup.indexOf('_activate_runtime_root() {'));
     expect(fn.slice(0, fn.indexOf('\n}\n'))).toMatch(/_runtime_root_refused "\$\{_SETUP_ARM%%\t\*\}" "\$root" && return 1/);
     const arms = [...setup.matchAll(/_activate_runtime_root create_(\w+)_runtime_root/g)].map(m => m[1]);
-    expect([...new Set(arms)].sort()).toEqual(['agy', 'codex', 'copilot', 'cursor', 'factory', 'opencode']);
+    expect([...new Set(arms)].sort()).toEqual(['agy', 'codex', 'copilot', 'cursor', 'factory', 'muse', 'opencode']);
   });
 
   test('control: the canonical ~/.claude/skills/gstack install and a repeat ./setup succeed', () => {

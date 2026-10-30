@@ -18,9 +18,10 @@ import hermes from './hermes';
 import gbrain from './gbrain';
 import copilot from './copilot';
 import agy from './agy';
+import muse from './muse';
 
 /** All registered host configs. Add new hosts here. */
-export const ALL_HOST_CONFIGS: HostConfig[] = [claude, codex, factory, kiro, opencode, slate, cursor, openclaw, hermes, gbrain, copilot, agy];
+export const ALL_HOST_CONFIGS: HostConfig[] = [claude, codex, factory, kiro, opencode, slate, cursor, openclaw, hermes, gbrain, copilot, agy, muse];
 
 /** Map from host name to config. */
 export const HOST_CONFIG_MAP: Record<string, HostConfig> = Object.fromEntries(
@@ -67,4 +68,4 @@ export function getExternalHosts(): HostConfig[] {
 }
 
 // Re-export individual configs for direct import
-export { claude, codex, factory, kiro, opencode, slate, cursor, openclaw, hermes, gbrain, copilot, agy };
+export { claude, codex, factory, kiro, opencode, slate, cursor, openclaw, hermes, gbrain, copilot, agy, muse };

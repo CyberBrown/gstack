@@ -546,6 +546,21 @@ if [ -d "$ANTIGRAVITY_SKILLS" ]; then
   done
 fi
 
+# ─── Remove Muse Code skills ───────────────────────────────
+# Same provenance gate. Only gstack* entries under ~/.config/muse/skills go.
+MUSE_SKILLS="$HOME/.config/muse/skills"
+if [ -d "$MUSE_SKILLS" ]; then
+  for _ITEM in "$MUSE_SKILLS"/gstack*; do
+    [ -e "$_ITEM" ] || [ -L "$_ITEM" ] || continue
+    if _cursor_item_is_gstack_managed "$_ITEM"; then
+      rm -rf "$_ITEM"
+      REMOVED+=("muse/$(basename "$_ITEM")")
+    else
+      _SKIPPED_DIRS+=("$_ITEM")
+    fi
+  done
+fi
+
 # ─── Reconcile the install registry ─────────────────────────
 # A registry that survives (--keep-state, or a state root selected by an env
 # var and left in place) must forget the installs removed above, or the next
