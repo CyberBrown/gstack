@@ -1,3 +1,9 @@
+> **Fork note (CyberBrown/gstack).** This is Chris's fork of garrytan/gstack. Read the
+> "fork operating manual" at the top of `CLAUDE.md` before changing anything, and see
+> `docs/FORK.md` for the fork delta and sync procedure. Work goes by branch + PR into the
+> default branch `chris/remove-unused-hosts`. Never push, open PRs or comment on
+> garrytan/gstack, and never hard-reset an install to its `origin/main`.
+
 # gstack — AI Engineering Workflow
 
 gstack is a collection of SKILL.md files that give AI agents structured roles for
@@ -71,6 +77,7 @@ Invoke them by name (e.g., `/office-hours`).
 | `/benchmark` | Performance regression detection (page load, Core Web Vitals). |
 | `/ubicloud` | Run a heavy suite, build or eval on an ephemeral 16-vCPU Ubicloud VM: TTL-named VMs with a reaper, quota preflight, hang watchdog, one committed verify per repository. |
 | `/benchmark-models` | Cross-model benchmark for skills (Claude, GPT, Gemini side-by-side). |
+| `/gstack-fork-sync` | Fork only: sync CyberBrown/gstack with upstream garrytan/gstack and re-apply the fork delta (docs/FORK.md). |
 | `/eval-plan` | Preregister a paid eval (bars, arms, decoys, stop rules), dry-run it for $0, pilot three priced items, then approve the spend. |
 | `/cso` | Supported security findings with explicit coverage. Static assessment remains available without catalog profiles. Contained runtime and scanner execution needs Docker and a matching qualified profile. The runtime catalog qualifies ten images: Node 24.4.0, Bun 1.3.10, Python 3.13.4 with uv 0.8.0, Rails on Ruby 3.4.4, and PostgreSQL 17.2, each for linux/amd64 and linux/arm64. The scanner catalog qualifies twelve: gitleaks, OSV-Scanner, Schemathesis, Semgrep, Trivy and zizmor on both platforms. Without Docker, or where no profile matches (native Windows Docker, for example), `/cso` runs static assessment only. Runtime-tested bundles authenticate separate external assertions. Project-test completion remains `self_reported` because target code controls the test process; `tested` is reserved for a future target-independent completion witness. |
 | `/setup-gbrain` | Set up gbrain for cross-machine session memory sync. |

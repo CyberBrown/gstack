@@ -45,9 +45,10 @@ jobs:
         shell: bash
         run: |
           files=(
-            test/hermes-hardening.test.ts
+            test/fork-outside-lane.test.ts
             test/codex-hardening.test.ts
-            test/outside-prompt.test.ts
+            test/outside-runner-contract.test.ts
+            test/claude-code-runner.test.ts
             test/host-config.test.ts
             test/gen-skill-docs.test.ts
             test/skill-validation.test.ts

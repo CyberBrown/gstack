@@ -11,6 +11,11 @@ Fork it. Improve it. Make it yours. And if you want to hate on free open source 
 - **First-time Claude Code users** — structured roles instead of a blank prompt
 - **Tech leads and staff engineers** — rigorous review, QA, and release automation on every PR
 
+> **This is CyberBrown/gstack, a fork of [garrytan/gstack](https://github.com/garrytan/gstack).**
+> Outside reviews go through a LiteLLM gateway and can swap between Codex, Claude Code and
+> Hermes per call; there is a Muse Code host. Fork delta, lane setup and sync procedure:
+> [docs/FORK.md](docs/FORK.md).
+
 ## Quick start
 
 1. Install gstack (two pastes, about 30 seconds of setup; see below).

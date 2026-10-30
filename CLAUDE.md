@@ -1,3 +1,41 @@
+# CLAUDE.md — CyberBrown/gstack (Chris's fork of garrytan/gstack)
+
+## READ FIRST — fork operating manual
+
+- This repo is a FORK. Upstream = https://github.com/garrytan/gstack (fetch-only; set its
+  push URL to `DISABLED`). NEVER push, open PRs, issues or comments against garrytan/gstack.
+- Default branch: `chris/remove-unused-hosts`. All work = branch + PR into it on
+  CyberBrown/gstack. `main` is a stale mirror; do not target it.
+- Fork delta and sync procedure: `docs/FORK.md`. Keep the delta additive (a run-time layer in
+  front of upstream code paths) so syncs stay cheap; never rewrite an upstream path when a
+  wrapper will do.
+- **Every outside-model call goes through the LiteLLM lane** (`lib/llm-lane.ts`, default
+  `llm_lane: litellm`). A new outside call must read the lane and refuse when it is not
+  ready; never add a path that falls back to a provider's direct endpoint. Codex gets
+  `-p <profile>` in `gstack-codex-probe`'s timeout wrapper; Claude Code gets the gateway via
+  `claudeLaneEnv` + `--settings`; Hermes must point `model.base_url` at the gateway.
+- **Providers swap at run time** (`gstack-outside-voice select`, `outside_voice`,
+  `outside_voice_fallback`); every rendered outside-voice block selects first. The repo trust
+  gate (`lib/outside-trust.ts`) is checked on every send path, user-invoked included.
+- Tests run with `GSTACK_LLM_LANE=direct` (pinned in `test-setup.ts`); lane tests set their
+  own env. Fork minimum: `test/fork-outside-lane.test.ts`. `/tmp` on monsta is an 8 GB tmpfs
+  that other work fills: run long suites with `TMPDIR` on disk
+  (`TMPDIR=~/.cache/<dir> bun run test`) or setup/conformance tests fail with ENOSPC.
+- Estate lanes: Codex profile `${CODEX_HOME:-~/.codex}/gstack.config.toml` (gateway model and
+  URL), key `GSTACK_LLM_API_KEY` from the secret store, never a file in this repo. Hermes
+  profile `gstack-reviewer`. The gateway key serves one model (`pro`).
+- Installs on monsta: `~/.claude/skills/gstack` (Claude), `~/.agents/skills/gstack` (Codex),
+  `~/.hermes/skills/gstack`, `~/.config/muse/skills/gstack` (symlinks into `~/projects/gstack`).
+  On those checkouts `origin` may be UPSTREAM. NEVER hard-reset an install to `origin/main`.
+- Forbidden: committing secrets; estate hostnames or IPs in commits, comments or docs (the
+  repo is public); `npm`/`npx` (Bun only); upstream-style VERSION/CHANGELOG bumps on fork
+  commits (record fork changes in `docs/FORK.md` instead).
+
+## Upstream manual (applies unless overridden above)
+
+Sections marked **UPSTREAM-ONLY** describe garrytan/gstack maintainer workflows. Do not
+apply them in this fork.
+
 # gstack development
 
 ## Commands
@@ -353,14 +391,18 @@ Even if the agent strongly believes a change improves the project, these three
 categories require explicit user approval via AskUserQuestion. No exceptions.
 No auto-merging. No "I'll just clean this up."
 
-## Checking out PRs from garrytan-agents
+## Checking out PRs from garrytan-agents (UPSTREAM-ONLY)
+
+> UPSTREAM-ONLY: garrytan/gstack maintainer workflow. Do not apply in the CyberBrown fork.
 
 Fork PRs (for example from `garrytan-agents/gstack`) get no base-repo secrets,
 so eval CI fails with empty-env auth. Unless the user says to leave it as a fork
 PR, push the branch to `garrytan/gstack` and re-target the PR from there:
 [docs/CONTRIBUTOR_REFERENCE.md](docs/CONTRIBUTOR_REFERENCE.md#checking-out-prs-from-garrytan-agents).
 
-## CHANGELOG + VERSION style
+## CHANGELOG + VERSION style (UPSTREAM-ONLY)
+
+> UPSTREAM-ONLY: garrytan/gstack maintainer workflow. Do not apply in the CyberBrown fork.
 
 **Choose versions autonomously; default to PATCH.** Garry delegates release
 version decisions to the agent. Do not ask him to choose or approve a version,
@@ -503,20 +545,33 @@ Also when running targeted E2E tests to debug failures:
 - Never `pkill` running eval processes and restart — you lose results and waste money
 - One clean run beats three killed-and-restarted runs
 
-## Publishing native OpenClaw skills to ClawHub
+## Publishing native OpenClaw skills to ClawHub (UPSTREAM-ONLY)
+
+> UPSTREAM-ONLY: garrytan/gstack maintainer workflow. Do not apply in the CyberBrown fork.
 
 Native OpenClaw skills live in `openclaw/skills/gstack-openclaw-*/SKILL.md`.
 The command is `clawhub publish` (NOT `clawhub skill publish`) — full
 workflow, auth, and verification:
 [docs/OPENCLAW_PUBLISHING.md](docs/OPENCLAW_PUBLISHING.md).
 
-## Deploying to the active skill
+## Deploying to the active skill (fork-aware)
 
-The active skill lives at `~/.claude/skills/gstack/`. After making changes:
+The installs on monsta (`~/.claude/skills/gstack`, `~/.agents/skills/gstack`,
+`~/.hermes/skills/gstack`) are git checkouts whose `origin` may still point at
+**upstream** garrytan/gstack. Never hard-reset an install to `origin/main`: that puts
+unreviewed upstream code on the path every skill preamble and hook executes, and drops
+the fork commits from the working tree. Deploy a reviewed fork revision instead:
 
-1. Push your branch
-2. Fetch and reset in the skill directory: `cd ~/.claude/skills/gstack && git fetch origin && git reset --hard origin/main`
-3. Rebuild: `cd ~/.claude/skills/gstack && bun run build`
+1. Merge your PR into the default branch on CyberBrown/gstack (and tag it, e.g.
+   `fork-v<upstream-version>-<n>`).
+2. In the install, check the remotes first: `git -C <install> remote -v`. Use the remote
+   that points at CyberBrown/gstack (`cyberbrown` or `origin`), never the upstream one.
+3. Record the current state (`git -C <install> status --porcelain`, `git log -1`,
+   `cat VERSION`), and ask before discarding any dirty file.
+4. `git -C <install> fetch <cyberbrown-remote> --tags && git -C <install> checkout <reviewed tag or commit>`
+5. Rebuild: `cd <install> && ./setup --host <claude|codex|hermes|muse>`
+
+The upstream notes below about `bun run build` and gbrain still apply after step 5.
 
 `bun run build` renders every host in a checkout setup never ran in. In an
 install (any checkout with `.gstack-installed-hosts`, including one set up with
