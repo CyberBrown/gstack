@@ -1,0 +1,110 @@
+name: Fork CI
+# CyberBrown/gstack fork CI. Upstream's workflows target `main` and paid
+# runners, and are guarded to garrytan/gstack, so they never cover the
+# fork's default branch. This workflow runs only in the fork.
+on:
+  pull_request:
+  push:
+    branches: [chris/remove-unused-hosts]
+
+permissions:
+  contents: read
+
+concurrency:
+  # PR-number keyed (run_id fallback for push), as upstream's workflows are.
+  group: fork-ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  fork-delta:
+    name: fork-delta tests
+    if: github.repository == 'CyberBrown/gstack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Stub `claude` on PATH
+        # test/host-config.test.ts "detect finds claude" expects the Claude
+        # CLI on PATH (true on a dev box). A no-op stub keeps host detection
+        # honest on a bare runner without installing the real CLI.
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/bin/claude"
+          chmod +x "$RUNNER_TEMP/bin/claude"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Fork-delta test suite
+        # The fork's own tests plus the upstream suites the fork delta
+        # touches. A listed file that does not exist fails the job: a
+        # silently skipped fork test is a coverage hole, not a pass.
+        shell: bash
+        run: |
+          files=(
+            test/hermes-hardening.test.ts
+            test/codex-hardening.test.ts
+            test/outside-prompt.test.ts
+            test/host-config.test.ts
+            test/gen-skill-docs.test.ts
+            test/skill-validation.test.ts
+            test/transcript-sessionstart-anchor.test.ts
+            test/autoplan-publication-guard.test.ts
+          )
+          missing=0
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || { echo "::error title=fork-delta::missing test file $f"; missing=1; }
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          bun test "${files[@]}"
+      - name: Generated skill docs are fresh (all hosts)
+        run: |
+          bun run gen:skill-docs --host all
+          git diff --exit-code || {
+            echo "Generated files are stale. Run: bun run gen:skill-docs --host all"
+            exit 1
+          }
+
+  free-suite:
+    # Upstream's free suite on a standard runner. Reported, not gating:
+    # several suites need a local environment (browsers, gbrain, team
+    # init) that a bare runner only approximates.
+    name: free suite (informational)
+    if: github.repository == 'CyberBrown/gstack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Upstream fixtures expect the push layout (a local `main`); see the
+      # same step in free-tests.yml.
+      - name: Match upstream's local branch layout
+        run: git checkout -q -B main
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Free suite (failures reported as a warning, not hidden)
+        shell: bash
+        run: |
+          set +e
+          bun run test 2>&1 | tee free-suite.log
+          rc=${PIPESTATUS[0]}
+          fails=$(grep -c '^(fail)' free-suite.log)
+          {
+            echo "### Free suite (informational)"
+            echo "exit code: $rc, failing tests: $fails"
+            echo '```'
+            grep '^(fail)' free-suite.log | sed 's/ \[.*//' | sort -u | head -100
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning title=free suite (informational)::$fails failing tests (exit $rc). See the job summary."
+          fi
+          exit 0
