@@ -1,6 +1,7 @@
 name: Fork CI
-# CyberBrown/gstack fork CI (TOOL-01). Upstream's eval workflows target `main`
-# and ubicloud runners, so they never covered the fork's default branch.
+# CyberBrown/gstack fork CI. Upstream's workflows target `main` and paid
+# runners, and are guarded to garrytan/gstack, so they never cover the
+# fork's default branch. This workflow runs only in the fork.
 on:
   pull_request:
   push:
@@ -10,17 +11,23 @@ permissions:
   contents: read
 
 concurrency:
-  group: fork-ci-${{ github.event.pull_request.number || github.ref }}
+  # PR-number keyed (run_id fallback for push), as upstream's workflows are.
+  group: fork-ci-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   fork-delta:
     name: fork-delta tests
-    runs-on: ubuntu-latest
+    if: github.repository == 'CyberBrown/gstack'
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - name: Stub `claude` on PATH
         # test/host-config.test.ts "detect finds claude" expects the Claude
@@ -32,34 +39,58 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/claude"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Fork-delta test suite
-        run: >-
-          bun test
-          test/hermes-hardening.test.ts
-          test/codex-hardening.test.ts
-          test/outside-prompt.test.ts
-          test/host-config.test.ts
-          test/gen-skill-docs.test.ts
-          test/skill-collision-sentinel.test.ts
-      - name: Generated skill docs are fresh
+        # The fork's own tests plus the upstream suites the fork delta
+        # touches. A listed file that does not exist fails the job: a
+        # silently skipped fork test is a coverage hole, not a pass.
+        shell: bash
         run: |
-          bun run gen:skill-docs
-          git diff --exit-code -- '*.md' || {
-            echo "Generated SKILL.md files are stale. Run: bun run gen:skill-docs"
+          files=(
+            test/fork-outside-lane.test.ts
+            test/codex-hardening.test.ts
+            test/outside-runner-contract.test.ts
+            test/claude-code-runner.test.ts
+            test/host-config.test.ts
+            test/gen-skill-docs.test.ts
+            test/skill-validation.test.ts
+            test/transcript-sessionstart-anchor.test.ts
+            test/autoplan-publication-guard.test.ts
+          )
+          missing=0
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || { echo "::error title=fork-delta::missing test file $f"; missing=1; }
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          bun test "${files[@]}"
+      - name: Generated skill docs are fresh (all hosts)
+        run: |
+          bun run gen:skill-docs --host all
+          git diff --exit-code || {
+            echo "Generated files are stale. Run: bun run gen:skill-docs --host all"
             exit 1
           }
 
   free-suite:
-    # Upstream v1.35's full free suite has known failures on the fork's
-    # default branch (doc inventory misses /document-generate; browse,
-    # gbrain-sync and team-init tests need a local environment). Reported,
-    # not gating, until the upstream consolidation (OPS-01) lands.
+    # Upstream's free suite on a standard runner. Reported, not gating:
+    # several suites need a local environment (browsers, gbrain, team
+    # init) that a bare runner only approximates.
     name: free suite (informational)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    if: github.repository == 'CyberBrown/gstack'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Upstream fixtures expect the push layout (a local `main`); see the
+      # same step in free-tests.yml.
+      - name: Match upstream's local branch layout
+        run: git checkout -q -B main
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
       - name: Free suite (failures reported as a warning, not hidden)
         shell: bash
         run: |
@@ -75,6 +106,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -ne 0 ]; then
-            echo "::warning title=free suite (informational)::$fails failing tests (exit $rc). Known upstream v1.35 and environment failures; not gating until the upstream consolidation (OPS-01). See the job summary."
+            echo "::warning title=free suite (informational)::$fails failing tests (exit $rc). See the job summary."
           fi
           exit 0

@@ -33,6 +33,7 @@ import {
   validateRegistrySignalKeys,
   newDimensionTotals,
   normalizeToDimensionValue,
+  resolveOptionKey,
   ALL_DIMENSIONS,
 } from '../scripts/psychographic-signals';
 import {
@@ -162,6 +163,7 @@ describe('one-way door safety', () => {
       'ship-test-failure-triage',         // shipping broken tests
       'review-sql-safety',                 // SQL injection path
       'review-llm-trust-boundary',         // LLM trust boundary
+      'review-gate-disposition',           // gate edit disposition: never-ask/AUTO_DECIDE must not waive it
       'cso-global-scan-approval',          // scans outside branch
       'cso-finding-fix',                   // security finding
       'land-and-deploy-merge-confirm',     // actual merge
@@ -286,6 +288,125 @@ describe('psychographic signal map', () => {
     const { extra } = validateRegistrySignalKeys();
     // Allow up to 3 "reserved" extras before flagging. Tighten later.
     expect(extra.length).toBeLessThanOrEqual(3);
+  });
+});
+
+// -----------------------------------------------------------------------
+// #2623 — chosen UI label → registered option key at capture time
+// -----------------------------------------------------------------------
+
+describe('option label → registered key (#2623)', () => {
+  const words = (key: string) => key.replace(/-/g, ' ');
+  const title = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  test('every registered option resolves from its own words, as a bare label and as an AUQ label', () => {
+    const misses: string[] = [];
+    for (const q of Object.values(QUESTIONS as Record<string, QuestionDef>)) {
+      for (const key of (q.options ?? []) as string[]) {
+        for (const label of [key, words(key), `A) ${title(words(key))} (recommended)`, `B. ${title(words(key))}`]) {
+          if (resolveOptionKey(q.id, label) !== key) misses.push(`${q.id}: ${JSON.stringify(label)} → ${resolveOptionKey(q.id, label)}`);
+        }
+      }
+    }
+    expect(misses).toEqual([]);
+  });
+
+  test('common phrasings map to the question\'s own key', () => {
+    const cases: Array<[string, string, string]> = [
+      ['plan-eng-review-arch-finding', 'A) Fix it now (recommended)', 'fix-now'],
+      ['plan-eng-review-arch-finding', 'Fix later', 'defer'],
+      ['plan-eng-review-arch-finding', 'B) Defer to TODOS.md', 'defer'],
+      ['plan-eng-review-arch-finding', 'C) Accept the risk and ship', 'accept-risk'],
+      ['plan-ceo-review-expansion-proposal', 'A) Add to plan (recommended)', 'accept'],
+      ['plan-ceo-review-expansion-proposal', 'B) Add to TODOs', 'defer'],
+      ['plan-ceo-review-mode', 'A) Expand scope (Recommended)', 'expand'],
+      ['plan-ceo-review-mode', 'A) SCOPE EXPANSION', 'expand'],
+      ['plan-ceo-review-mode', 'B) SELECTIVE EXPANSION', 'selective'],
+      ['plan-ceo-review-mode', 'C) HOLD SCOPE (recommended)', 'hold'],
+      ['plan-ceo-review-mode', 'D) SCOPE REDUCTION', 'reduce'],
+      ['plan-ceo-review-mode', 'Cherry-pick expansions', 'selective'],
+      ['plan-ceo-review-mode', 'Cut to the minimum', 'reduce'],
+      ['ship-pre-landing-review-fix', 'Ship as-is', 'skip'],
+      ['ship-test-failure-triage', 'Ship anyway, the failures are known', 'ack-and-ship'],
+      ['review-finding-fix', 'Not a bug, the input is trusted', 'false-positive'],
+      ['land-and-deploy-merge-confirm', 'Yes, merge it', 'accept'],
+      ['land-and-deploy-merge-confirm', 'Don’t merge yet', 'reject'],
+      ['plan-eng-review-test-gap', 'Add the test now', 'add-test'],
+      ['office-hours-mode-goal', 'Hackathon / demo', 'hackathon'],
+    ];
+    for (const [id, label, key] of cases) {
+      expect({ id, label, key: resolveOptionKey(id, label) }).toEqual({ id, label, key });
+    }
+  });
+
+  test('negative controls stay unmapped', () => {
+    // Unregistered (ad-hoc or hook-hash) ids: no registered options to map to.
+    expect(resolveOptionKey('plan-eng-review-ci-typecheck', 'Fix now')).toBeUndefined();
+    expect(resolveOptionKey('hook-0123456789', 'Accept')).toBeUndefined();
+    // Registered question with no options list.
+    expect(resolveOptionKey('plan-devex-review-persona', 'Accept')).toBeUndefined();
+    // A label that names none of the question's options.
+    expect(resolveOptionKey('plan-eng-review-arch-finding', 'Restore the parallel typecheck job')).toBeUndefined();
+    // Cues anchor at the start of the label, never mid-sentence.
+    expect(resolveOptionKey('review-sql-safety', 'Ship it, then fix')).toBeUndefined();
+    expect(resolveOptionKey('review-sql-safety', "Don't fix")).toBeUndefined();
+    // Another question's key is not a candidate.
+    expect(resolveOptionKey('qa-tier', 'Fix now')).toBeUndefined();
+    // A selector-looking number is not stripped into a match.
+    expect(resolveOptionKey('qa-tier', '1.5x deeper')).toBeUndefined();
+    expect(resolveOptionKey('plan-eng-review-arch-finding', '')).toBeUndefined();
+  });
+
+  function logAndRead(entries: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+    const tmpHome = fs.mkdtempSync(path.join(require('os').tmpdir(), 'gstack-2623-'));
+    try {
+      const { spawnSync } = require('child_process');
+      const env = { ...process.env, GSTACK_HOME: tmpHome, GSTACK_QUESTION_LOG_NO_DERIVE: '1' };
+      const logBin = path.join(ROOT, 'bin', 'gstack-question-log');
+      for (const e of entries) {
+        const r = spawnSync(logBin, [JSON.stringify({ skill: 'plan-eng-review', question_summary: 'q?', ...e })], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 });
+        expect(r.status).toBe(0);
+      }
+      const [slug] = fs.readdirSync(path.join(tmpHome, 'projects'));
+      return fs
+        .readFileSync(path.join(tmpHome, 'projects', slug, 'question-log.jsonl'), 'utf-8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l));
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  }
+
+  test('gstack-question-log records the key and keeps the label for hook events on registered ids only', () => {
+    const [hook, agentKey, agentMode, adHoc, unmatched, freeText] = logAndRead([
+      { question_id: 'plan-eng-review-arch-finding', user_choice: 'A) Fix it now (recommended)', recommended: 'Fix it now', source: 'hook' },
+      { question_id: 'plan-eng-review-arch-finding', user_choice: 'defer', recommended: 'fix-now' },
+      { skill: 'plan-ceo-review', question_id: 'plan-ceo-review-mode', user_choice: 'HOLD SCOPE', recommended: 'HOLD SCOPE', auto_decided: true },
+      { question_id: 'plan-eng-review-ci-typecheck', user_choice: 'Fix now', source: 'hook' },
+      { question_id: 'plan-eng-review-arch-finding', user_choice: 'Restore the parallel typecheck job', source: 'hook' },
+      { question_id: 'plan-eng-review-arch-finding', user_choice: 'Fix it but rename the module first', free_text: 'Fix it but rename the module first', source: 'auq-other' },
+    ]);
+    expect(hook).toMatchObject({ user_choice: 'fix-now', choice_label: 'A) Fix it now (recommended)', recommended: 'fix-now', followed_recommendation: true });
+    expect(agentKey).toMatchObject({ user_choice: 'defer', recommended: 'fix-now', followed_recommendation: false });
+    expect(agentKey.choice_label).toBeUndefined();
+    // Agent-written rows keep what the agent logged; the auto-decide harness
+    // matches plan-ceo-review's full mode names.
+    expect(agentMode).toMatchObject({ source: 'agent', user_choice: 'HOLD SCOPE', recommended: 'HOLD SCOPE', followed_recommendation: true });
+    expect(agentMode.choice_label).toBeUndefined();
+    expect(adHoc).toMatchObject({ user_choice: 'Fix now' });
+    expect(adHoc.choice_label).toBeUndefined();
+    expect(unmatched).toMatchObject({ user_choice: 'Restore the parallel typecheck job' });
+    expect(unmatched.choice_label).toBeUndefined();
+    expect(freeText).toMatchObject({ user_choice: 'Fix it but rename the module first', source: 'auq-other' });
+    expect(freeText.choice_label).toBeUndefined();
+  });
+
+  test('a picked label scores as following a key recommendation', () => {
+    const [row] = logAndRead([
+      { question_id: 'plan-ceo-review-mode', user_choice: 'A) Expand scope (Recommended)', recommended: 'expand', source: 'hook' },
+    ]);
+    expect(row).toMatchObject({ user_choice: 'expand', followed_recommendation: true });
   });
 });
 
@@ -475,7 +596,14 @@ describe('preamble — QUESTION_TUNING injection', () => {
       preambleTier: 2,
     };
     const out = generatePreamble(ctx);
-    expect(out).toContain('QUESTION_TUNING: $_QUESTION_TUNING');
+    // Phase 1: the config echo moved into bin/gstack-skill-start; the render's
+    // section gates itself on the echoed key.
+    const script = fs.readFileSync(
+      path.join(import.meta.dir, '..', 'bin', 'gstack-skill-start'),
+      'utf-8',
+    );
+    expect(script).toContain('echo "QUESTION_TUNING: $_QUESTION_TUNING"');
+    expect(out).toContain('QUESTION_TUNING: false');
     expect(out).toContain('## Question Tuning');
     expect(out).toContain('gstack-question-preference --check');
     expect(out).toContain('gstack-question-log');
@@ -535,7 +663,15 @@ describe('end-to-end pipeline (binaries working together)', () => {
   test('log many expand choices → derive pushes scope_appetite up', () => {
     const tmpHome = fs.mkdtempSync(path.join(require('os').tmpdir(), 'gstack-e2e-'));
     try {
-      const env = { ...process.env, GSTACK_HOME: tmpHome };
+      // GSTACK_QUESTION_LOG_NO_DERIVE=1 suppresses gstack-question-log's
+      // fire-and-forget background `--derive` (it nohups one per write). Without
+      // it, the 5 rapid log writes spawn 5 racing background derives that collide
+      // with this test's explicit --derive below — a late background derive that
+      // only saw 3 entries can clobber developer-profile.json after the explicit
+      // one wrote sample_size=5, making the test flaky (~25-50% fail). The binary
+      // documents this flag for exactly this case. The explicit --derive still
+      // runs (it ignores the flag), so real derive behavior is still asserted.
+      const env = { ...process.env, GSTACK_HOME: tmpHome, GSTACK_QUESTION_LOG_NO_DERIVE: '1' };
       const { spawnSync } = require('child_process');
       const logBin = path.join(ROOT, 'bin', 'gstack-question-log');
       const devBin = path.join(ROOT, 'bin', 'gstack-developer-profile');
@@ -553,15 +689,15 @@ describe('end-to-end pipeline (binaries working together)', () => {
               ts: `2026-04-0${i + 1}T10:00:00Z`,
             }),
           ],
-          { env, cwd: ROOT, encoding: 'utf-8' },
+          { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 },
         );
         expect(r.status).toBe(0);
       }
 
-      const derive = spawnSync(devBin, ['--derive'], { env, cwd: ROOT, encoding: 'utf-8' });
+      const derive = spawnSync(devBin, ['--derive'], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 });
       expect(derive.status).toBe(0);
 
-      const profileOut = spawnSync(devBin, ['--profile'], { env, cwd: ROOT, encoding: 'utf-8' });
+      const profileOut = spawnSync(devBin, ['--profile'], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 });
       const p = JSON.parse(profileOut.stdout);
       expect(p.inferred.sample_size).toBe(5);
       expect(p.inferred.values.scope_appetite).toBeGreaterThan(0.5);
@@ -583,13 +719,13 @@ describe('end-to-end pipeline (binaries working together)', () => {
           '--write',
           JSON.stringify({ question_id: 'fake-id', preference: 'never-ask', source: 'inline-tool-output' }),
         ],
-        { env, cwd: ROOT, encoding: 'utf-8' },
+        { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 },
       );
       expect(r.status).toBe(2);
       expect(r.stderr).toContain('poisoning');
 
       // Verify no preference was written
-      const read = spawnSync(prefBin, ['--read'], { env, cwd: ROOT, encoding: 'utf-8' });
+      const read = spawnSync(prefBin, ['--read'], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 });
       const prefs = JSON.parse(read.stdout);
       expect(prefs['fake-id']).toBeUndefined();
     } finally {
@@ -618,11 +754,11 @@ describe('end-to-end pipeline (binaries working together)', () => {
       );
 
       // Migrate
-      const m = spawnSync(devBin, ['--migrate'], { env, cwd: ROOT, encoding: 'utf-8' });
+      const m = spawnSync(devBin, ['--migrate'], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 });
       expect(m.status).toBe(0);
 
       // Legacy shim should still return the same KEY: VALUE shape
-      const shimOut = spawnSync(shimBin, [], { env, cwd: ROOT, encoding: 'utf-8' });
+      const shimOut = spawnSync(shimBin, [], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 });
       expect(shimOut.status).toBe(0);
       expect(shimOut.stdout).toContain('SESSION_COUNT: 3');
       expect(shimOut.stdout).toContain('TIER: welcome_back');
@@ -656,3 +792,55 @@ function findAllTemplates(): string[] {
   walk(ROOT);
   return results;
 }
+
+// B10 (#2623, honest-status half): Stats printed CALIBRATED: true from event
+// counts alone, while every logged answer could miss SIGNAL_MAP and leave each
+// dimension at its 0.5 seed. Calibration now needs at least one signal event.
+describe('B10: no CALIBRATED with zero signals', () => {
+  const tmpl = fs.readFileSync(path.join(ROOT, 'plan-tune', 'SKILL.md.tmpl'), 'utf-8');
+  const start = tmpl.indexOf('gstack-developer-profile --profile | bun --no-env-file --config=/dev/null -e "') + 'gstack-developer-profile --profile | bun --no-env-file --config=/dev/null -e "'.length;
+  const script = tmpl.slice(start, tmpl.indexOf('\n"\necho \'---DISTILL---\'', start));
+  const calibration = (inferred: object) => {
+    const { spawnSync } = require('child_process');
+    const r = spawnSync('bun', ['-e', script], { input: JSON.stringify({ inferred }), encoding: 'utf-8', timeout: 30_000 });
+    expect(r.status).toBe(0);
+    return r.stdout as string;
+  };
+  const enough = { sample_size: 40, diversity: { skills_covered: 5, question_ids_covered: 12, days_span: 9 } };
+
+  test('every count gate passing but zero signal events is not calibrated', () => {
+    const out = calibration({ ...enough, signal_events: 0 });
+    expect(out).toContain('CALIBRATED: false');
+    expect(out).toContain('CALIBRATION: not calibrated: no recorded signals');
+  });
+
+  test('a profile derived before signal counting is not reported calibrated', () => {
+    expect(calibration(enough)).toContain('CALIBRATED: false');
+  });
+
+  test('signal events plus the count gates still calibrate', () => {
+    const out = calibration({ ...enough, signal_events: 7 });
+    expect(out).toContain('CALIBRATED: true');
+    expect(out).not.toContain('CALIBRATION:');
+  });
+
+  test('--derive counts only answers that moved a dimension', () => {
+    const tmpHome = fs.mkdtempSync(path.join(require('os').tmpdir(), 'gstack-b10-'));
+    try {
+      const { spawnSync } = require('child_process');
+      const env = { ...process.env, GSTACK_HOME: tmpHome, GSTACK_QUESTION_LOG_NO_DERIVE: '1' };
+      const logBin = path.join(ROOT, 'bin', 'gstack-question-log');
+      const devBin = path.join(ROOT, 'bin', 'gstack-developer-profile');
+      for (const [i, choice] of ['expand', 'A) Expand scope (Recommended)', 'something-unmapped'].entries()) {
+        const r = spawnSync(logBin, [JSON.stringify({ skill: 'plan-ceo-review', question_id: 'plan-ceo-review-mode', question_summary: 'mode?', user_choice: choice, session_id: `s${i}`, ts: `2026-04-0${i + 1}T10:00:00Z` })], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 });
+        expect(r.status).toBe(0);
+      }
+      expect(spawnSync(devBin, ['--derive'], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 }).status).toBe(0);
+      const p = JSON.parse(spawnSync(devBin, ['--profile'], { env, cwd: ROOT, encoding: 'utf-8', timeout: 30_000 }).stdout);
+      expect(p.inferred.sample_size).toBe(3);
+      expect(p.inferred.signal_events).toBe(1);
+    } finally {
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});

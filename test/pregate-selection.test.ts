@@ -1,0 +1,714 @@
+/**
+ * C8 `lanes` selection and the mechanical preflight checks, pinned on tokens,
+ * exit codes and the pregate.json contract. Fixture repos live under
+ * os.tmpdir() (test/helpers/pregate-fixture.ts). Incident replays named in
+ * the plan's P0-4 section, each caught locally before any remote gate:
+ *   p0-4-stale-goldens          regen: a changed input, an unchanged output
+ *   p0-4-scratch-script         strays: zz-probe.sh at the repository root
+ *   p0-4-heavy-old-constant     literals: a nightly-only test keeps the old number
+ *   p0-4-windows-lane-unrun     lanes: a Windows-only test file changes on Linux
+ *   p0-4-pipe-hidden-failure    lanes: `false | tail` under pipefail is red
+ */
+import { afterEach, describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { EXIT } from '../lib/headless-artifacts';
+import { changedLiterals, constantsIn, consumersOf } from '../lib/pregate/checks/literals';
+import { parseSummary, planRuns } from '../lib/pregate/checks/lanes';
+import { DEFAULT_CONFIG, validateConfig } from '../lib/pregate/config';
+import { isDocsEmptyLane } from '../lib/pregate/docs-lane';
+import { buildGraph, testsFor } from '../lib/pregate/import-graph';
+import { CHECK_IDS } from '../lib/pregate/index';
+import type { PregateContext } from '../lib/pregate/types';
+import { parseWorkflow } from '../lib/pregate/workflows';
+import { BASE_PREGATE, cleanup, commit, makeFixtureRepo, runBin, write, type FixtureRepo } from './helpers/pregate-fixture';
+
+const repos: FixtureRepo[] = [];
+const fixture = (opts?: Parameters<typeof makeFixtureRepo>[0]) => { const r = makeFixtureRepo(opts); repos.push(r); return r; };
+afterEach(() => { while (repos.length) cleanup(repos.pop()!); });
+const pregate = (repo: FixtureRepo, args: string[]) => runBin(repo, 'gstack-pregate', ['--base', 'main', '--allow-repo-commands', ...args]);
+const readOut = (repo: FixtureRepo) => JSON.parse(fs.readFileSync(path.join(repo.work, '.gstack/tmp/pregate.json'), 'utf8'));
+const check = (repo: FixtureRepo, id: string) => readOut(repo).checks.find((c: any) => c.id === id);
+
+describe('workflow lanes (parser over .github/workflows)', () => {
+  test('platform from runs-on, planner-computed matrix kept as an expression, test files from run steps and package scripts, manual jobs flagged', () => {
+    const text = `name: CI\njobs:\n  unit:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bun test test/a.test.ts\n  win:\n    runs-on: windows-latest\n    strategy:\n      matrix: \${{ fromJSON(needs.plan.outputs.matrix) }}\n    steps:\n      - run: |\n          bun run test:win\n  record:\n    if: \${{ inputs.record }}\n    runs-on: windows-latest\n    steps:\n      - run: bun run test:win --record\n  serial:\n    runs-on: macos-latest\n    strategy:\n      max-parallel: 1\n    steps:\n      - run: npm test\n`;
+    const lanes = parseWorkflow('ci.yml', text, 'linux', { 'test:win': 'bun test test/win.test.ts' });
+    expect(lanes.map(l => [l.id, l.platform, l.tier, l.runsTests, l.manual])).toEqual([
+      ['ci.yml/unit', 'linux', 'unit', true, false], ['ci.yml/win', 'windows', 'platform', true, false], ['ci.yml/record', 'windows', 'platform', true, true], ['ci.yml/serial', 'macos', 'platform', true, false],
+    ]);
+    expect(lanes[0]!.testFiles).toEqual(['test/a.test.ts']);
+    expect(lanes[1]!.matrixExpression).toBe('${{ fromJSON(needs.plan.outputs.matrix) }}');
+    expect(lanes[1]!.testFiles).toEqual(['test/win.test.ts']);
+    expect(parseWorkflow('ci.yml', text, 'win32')[1]!.tier).toBe('unit');
+    expect(parseWorkflow('ci.yml', text, 'win32')[0]!.tier).toBe('platform');
+  });
+
+  test('a verify-only shard step is not a test lane', () => {
+    const lanes = parseWorkflow('w.yml', 'jobs:\n  v:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bun run scripts/test-free-shards.ts --windows-only --ci-verify x\n');
+    expect(lanes[0]!.runsTests).toBe(false);
+  });
+});
+
+describe('import graph (static imports ∪ repo-path literals ∪ bin convention ∪ declarations)', () => {
+  test('imports, a joined literal read, the bin/<name> convention, a declared dependency and a deleted file all map; an orphan does not', () => {
+    const repo = fixture();
+    commit(repo, { 'lib/gone.js': null, 'test/gone.test.js': "const test = require('node:test');\ntest('reads a path', () => { require('node:fs').existsSync('lib/gone.js'); });\n" });
+    const g = buildGraph(repo.work, { declarations: BASE_PREGATE.dependencies, extraFiles: ['lib/gone.js'] });
+    expect(testsFor(g, 'lib/retry.js').tests).toEqual(['test/nightly/retry-heavy.test.js', 'test/retry.test.js']);
+    expect(testsFor(g, 'lib/config.json').tests).toEqual(['test/config-read.test.js']);
+    expect(testsFor(g, 'bin/tool').tests).toEqual(['test/tool-cli.test.js']);
+    const declared = buildGraph(repo.work, { declarations: { 'lib/orphan.js': ['test/util.test.js'] } });
+    expect(testsFor(declared, 'lib/orphan.js').provenance).toEqual(['test/util.test.js ← lib/orphan.js (declared)']);
+    expect(testsFor(g, 'lib/gone.js').tests).toEqual(['test/gone.test.js']);
+    expect(testsFor(g, 'lib/orphan.js')).toMatchObject({ tests: [], declaredNone: false });
+    expect(testsFor(g, 'docs/README.md', BASE_PREGATE.dependencies)).toMatchObject({ tests: [], declaredNone: true });
+    expect(testsFor(g, 'test/util.test.js').tests).toEqual(['test/util.test.js']);
+  });
+
+  test('markdown a test reads maps through the same literal and join edges; an unreferenced markdown file does not', () => {
+    const repo = fixture();
+    commit(repo, {
+      'prompts/system.md': '# system\n',
+      'notes/scratch.md': '# scratch\n',
+      'test/fixtures/sample.md': '# sample\n',
+      'test/prompt-doc.test.js': "const test = require('node:test');\nconst fs = require('node:fs');\ntest('reads the prompt', () => { fs.readFileSync('prompts/system.md', 'utf8'); });\n",
+      'test/fixture-doc.test.js': "const test = require('node:test');\nconst fs = require('node:fs');\nconst path = require('node:path');\ntest('reads the fixture', () => { fs.readFileSync(path.join('test', 'fixtures', 'sample.md'), 'utf8'); });\n",
+    });
+    const g = buildGraph(repo.work);
+    expect(testsFor(g, 'prompts/system.md').tests).toEqual(['test/prompt-doc.test.js']);
+    expect(testsFor(g, 'prompts/system.md').provenance[0]).toContain('(literal)');
+    expect(testsFor(g, 'test/fixtures/sample.md').tests).toEqual(['test/fixture-doc.test.js']);
+    expect(testsFor(g, 'test/fixtures/sample.md').provenance[0]).toContain('(literal)');
+    expect(testsFor(g, 'notes/scratch.md')).toMatchObject({ tests: [], declaredNone: false });
+  });
+
+  test('#3340: an extensionless import of a .jsx, .mts or .cts file maps to that file', () => {
+    const repo = fixture();
+    commit(repo, {
+      'src/components/Foo.jsx': 'export default function Foo() { return null; }\n',
+      'src/lib/m.mts': 'export const m = 1;\n',
+      'src/lib/c.cts': 'export const c = 1;\n',
+      'test/foo.test.jsx': "import Foo from '../src/components/Foo';\nimport { m } from '../src/lib/m';\nimport { c } from '../src/lib/c';\n",
+    });
+    const g = buildGraph(repo.work);
+    for (const f of ['src/components/Foo.jsx', 'src/lib/m.mts', 'src/lib/c.cts']) {
+      expect(testsFor(g, f).tests).toEqual(['test/foo.test.jsx']);
+      expect(testsFor(g, f).provenance[0]).toContain('(import)');
+    }
+  });
+
+  test('#3340: a directory import resolves to its index.jsx, index.tsx or index.mjs, not only the dir/** fallback', () => {
+    const repo = fixture();
+    commit(repo, {
+      'src/Bar/index.jsx': 'export default 1;\n',
+      'src/Bar/other.js': 'export default 2;\n',
+      'src/Baz/index.tsx': 'export default 1;\n',
+      'src/Baz/other.js': 'export default 2;\n',
+      'src/Qux/index.mjs': 'export default 1;\n',
+      'src/Qux/other.js': 'export default 2;\n',
+      'test/dirs.test.js': "import Bar from '../src/Bar';\nimport Baz from '../src/Baz';\nimport Qux from '../src/Qux';\n",
+    });
+    const g = buildGraph(repo.work);
+    for (const f of ['src/Bar/index.jsx', 'src/Baz/index.tsx', 'src/Qux/index.mjs']) {
+      expect(testsFor(g, f).tests).toEqual(['test/dirs.test.js']);
+      expect(testsFor(g, f).provenance[0]).not.toContain('/**');
+    }
+    for (const f of ['src/Bar/other.js', 'src/Baz/other.js', 'src/Qux/other.js']) expect(testsFor(g, f).tests).toEqual([]);
+  });
+
+  test('#3340: an import through a jsconfig paths alias reaches a .jsx file; an existing .js sibling still wins', () => {
+    const repo = fixture();
+    commit(repo, {
+      'jsconfig.json': '{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } } }\n',
+      'src/ui/Button.jsx': 'export default function Button() { return null; }\n',
+      'src/ui/Card.js': 'export default 1;\n',
+      'src/ui/Card.jsx': 'export default 2;\n',
+      'test/ui.test.jsx': "import Button from '@/ui/Button';\nimport Card from '@/ui/Card';\n",
+    });
+    const g = buildGraph(repo.work);
+    expect(testsFor(g, 'src/ui/Button.jsx').tests).toEqual(['test/ui.test.jsx']);
+    expect(testsFor(g, 'src/ui/Card.js').tests).toEqual(['test/ui.test.jsx']);
+    expect(testsFor(g, 'src/ui/Card.jsx').tests).toEqual([]);
+  });
+
+  test('python: absolute, from-import submodule, relative and parenthesised imports and mock.patch targets map; stdlib, comments and docstrings do not', () => {
+    const repo = fixture();
+    commit(repo, {
+      'pkg/__init__.py': '',
+      'pkg/core.py': 'import os\nfrom pkg.util import helper\n',
+      'pkg/util.py': 'def helper():\n    return 1\n',
+      'pkg/multi.py': 'X = 1\n',
+      'pkg/patched.py': 'class Thing:\n    def run(self):\n        return 1\n',
+      'pkg/ghost.py': 'G = 1\n',
+      'pkg/sub/__init__.py': '',
+      'pkg/sub/sibling.py': 'S = 1\n',
+      'pkg/sub/leaf.py': 'from .. import core\nfrom . import sibling\n',
+      'tests/test_core.py': 'import pkg.core as core\n',
+      'tests/test_leaf.py': 'from pkg.sub import leaf\n',
+      'tests/test_multi.py': 'from pkg import (\n    multi,  # the module\n    util,\n)\nimport json, os.path\n',
+      'tests/test_patch.py': "from unittest import mock\n\n@mock.patch('pkg.patched.Thing.run')\ndef test_run(run):\n    pass\n",
+      'tests/test_ghost.py': '"""\nimport pkg.ghost\n"""\n# from pkg import ghost\nX = "from pkg import ghost"\n',
+    });
+    const g = buildGraph(repo.work);
+    expect(testsFor(g, 'pkg/core.py').tests).toEqual(['tests/test_core.py', 'tests/test_leaf.py']);
+    expect(testsFor(g, 'pkg/util.py').tests).toEqual(['tests/test_core.py', 'tests/test_leaf.py', 'tests/test_multi.py']);
+    expect(testsFor(g, 'pkg/sub/sibling.py').tests).toEqual(['tests/test_leaf.py']);
+    expect(testsFor(g, 'pkg/multi.py').tests).toEqual(['tests/test_multi.py']);
+    expect(testsFor(g, 'pkg/patched.py').provenance).toEqual(['tests/test_patch.py ← pkg/patched.py (literal)']);
+    expect(testsFor(g, 'pkg/sub/__init__.py').tests).toEqual(['tests/test_leaf.py']);
+    expect(testsFor(g, 'pkg/__init__.py').tests).toEqual(['tests/test_core.py', 'tests/test_leaf.py', 'tests/test_multi.py', 'tests/test_patch.py']);
+    expect(testsFor(g, 'pkg/ghost.py').tests).toEqual([]);
+    expect([...g.reverse.keys()].filter(k => k.endsWith('.py')).sort()).toEqual([
+      'pkg/__init__.py', 'pkg/core.py', 'pkg/multi.py', 'pkg/patched.py', 'pkg/sub/__init__.py', 'pkg/sub/leaf.py', 'pkg/sub/sibling.py', 'pkg/util.py',
+    ]);
+  });
+
+  test('python: a package and a same-named module both map, statements after ; and : map, escaped triple quotes and deep modules map, a path literal does not hide its patch target, and adversarial input stays linear', () => {
+    const repo = fixture();
+    commit(repo, {
+      'app.py': 'A = 1\n',
+      'app/__init__.py': '',
+      'pkg/__init__.py': '',
+      'pkg/core.py': 'C = 1\n',
+      'pkg/patched.py': 'class Thing:\n    pass\n',
+      'pkg.patched.Thing.run': 'a file whose name is also a patch target\n',
+      'tests/test_app.py': 'import app\n',
+      'tests/test_semicolon.py': 'import os; import pkg.core\n',
+      'tests/test_inline.py': 'def test_core():\n    if True: from pkg.core import C\n',
+      'tests/test_patch.py': "from unittest import mock\n\n@mock.patch('pkg.patched.Thing.run')\ndef test_run(run):\n    pass\n",
+      'tests/test_adversarial.py': `from ${'.'.repeat(100_000)}x\nfrom ${' '.repeat(100_000)}x\nX = '${Array.from({ length: 20_000 }, () => 'pkg').join('.')}'\n${'\\"""'.repeat(20_000)}\n`,
+      'tests/test_escaped.py': 'DOC = """text \\"""\nstill doc"""\nimport pkg.core\nTAIL = """x"""\n',
+      [`${Array.from({ length: 33 }, (_, i) => `d${i}`).join('/')}/leaf.py`]: 'L = 1\n',
+      'tests/test_deep.py': `import ${Array.from({ length: 33 }, (_, i) => `d${i}`).join('.')}.leaf\n`,
+    });
+    const g = buildGraph(repo.work);
+    expect(testsFor(g, 'app/__init__.py').tests).toEqual(['tests/test_app.py']);
+    expect(testsFor(g, 'app.py').tests).toEqual(['tests/test_app.py']);
+    expect(testsFor(g, 'pkg/core.py').tests).toEqual(['tests/test_escaped.py', 'tests/test_inline.py', 'tests/test_semicolon.py']);
+    expect(testsFor(g, `${Array.from({ length: 33 }, (_, i) => `d${i}`).join('/')}/leaf.py`).tests).toEqual(['tests/test_deep.py']);
+    expect(testsFor(g, 'pkg/patched.py').tests).toEqual(['tests/test_patch.py']);
+    expect(testsFor(g, 'pkg.patched.Thing.run').tests).toEqual(['tests/test_patch.py']);
+    expect(testsFor(g, 'pkg/__init__.py').tests).toEqual(['tests/test_adversarial.py', 'tests/test_escaped.py', 'tests/test_inline.py', 'tests/test_patch.py', 'tests/test_semicolon.py']);
+  });
+});
+
+describe('literals (pure)', () => {
+  test('exported constants with literal values are extracted; a changed one pairs old and new; functions are ignored', () => {
+    expect([...constantsIn("export const MAX = 3;\nexport const NAME = 'x';\nexports.LIMIT = 10;\nexport const fn = () => 1;\nTIMEOUT_MS = 5000\n").entries()]).toEqual([['MAX', '3'], ['NAME', "'x'"], ['LIMIT', '10'], ['TIMEOUT_MS', '5000']]);
+    expect(changedLiterals('f.ts', 'export const MAX = 3;\nconst x = { timeout: 5000 };', 'export const MAX = 4;\nconst x = { timeout: 9000 };')).toEqual([
+      { name: 'MAX', old: '3', new: '4', file: 'f.ts' }, { name: 'timeout', old: '5000', new: '9000', file: 'f.ts' },
+    ]);
+  });
+  test('consumersOf: a module stem is a path fragment, never a bare word, and a one-character old value needs the constant name (GSTA-114 flood: install.sh 2 -> 3 flagged 575 consumers)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-literals-'));
+    const nl = String.fromCharCode(10);
+    const files: Record<string, string> = {
+      'test/wrapper.test.ts': ["import { x } from '../capy/skill/gstack/scripts/install.sh';", 'expect(GSTACK_CAPY_WRAPPER).toBe(2);', ''].join(nl),
+      'test/by-path.test.ts': ["const out = run('scripts/install.sh');", 'expect(out.wrapper).toBe(2);', ''].join(nl),
+      'test/prose.test.ts': ['// run install first, then check 2 things', 'expect(count).toBe(2);', ''].join(nl),
+      'test/other.test.ts': ['expect(install.steps.length).toBe(2);', ''].join(nl),
+      'test/retry.test.ts': ["expect(require('../lib/retry.js').TIMEOUT_MS).toBe(5000);", ''].join(nl),
+      'test/retry-path.test.ts': ["const mod = require('../lib/retry.js');", 'expect(mod.wait()).toBe(5000);', ''].join(nl),
+      'test/retry-bare.test.ts': ["const mod = load('retry.js');", 'expect(mod.wait()).toBe(5000);', ''].join(nl),
+      'test/reretry.test.ts': ["const mod = load('preretry.js');", 'expect(mod.wait()).toBe(5000);', ''].join(nl),
+      'test/retry-words.test.ts': ['// the retry budget was 5000 once', 'expect(elapsed).toBeLessThan(5000);', ''].join(nl),
+    };
+    for (const [rel, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); }
+    const all = Object.keys(files);
+    // A one-character value: only the file that names the constant counts; the path fragment alone is not enough for "2".
+    expect(consumersOf(root, all, { name: 'GSTACK_CAPY_WRAPPER', old: '2', new: '3', file: 'capy/skill/gstack/scripts/install.sh' })).toEqual(['test/wrapper.test.ts:2']);
+    // A longer value: the constant's name, the module's full file name, or its stem as a path fragment; the bare word "retry" in prose and "preretry.js" do not count.
+    expect(consumersOf(root, all, { name: 'TIMEOUT_MS', old: '5000', new: '9000', file: 'lib/retry.js' })).toEqual(['test/retry.test.ts:1', 'test/retry-path.test.ts:2', 'test/retry-bare.test.ts:2']);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  test('runner summaries: bun, node --test, vitest, jest, pytest, zero-run', () => {
+    expect(parseSummary(' 12 pass\n 1 fail\nRan 13 tests across 2 files.')).toEqual({ ran: 13, failed: 1 });
+    expect(parseSummary('# tests 4\n# pass 4\n# fail 0')).toEqual({ ran: 4, failed: 0 });
+    expect(parseSummary('Tests  2 failed | 8 passed (10)')).toEqual({ ran: 10, failed: 2 });
+    expect(parseSummary('Tests:       1 failed, 7 passed, 8 total')).toEqual({ ran: 8, failed: 1 });
+    expect(parseSummary('===== 3 passed in 0.1s =====')).toEqual({ ran: 3, failed: 0 });
+    expect(parseSummary('No tests found')).toEqual({ ran: 0, failed: 0 });
+    expect(parseSummary('ok')).toEqual({ ran: null, failed: null });
+  });
+  test('config: unknown keys, secrets in warn, a runner without {files} and an uncontained glob are PREGATE_CONFIG_INVALID', () => {
+    const codes = (c: unknown) => validateConfig(c, CHECK_IDS).map(e => `${e.code}:${e.path}`);
+    expect(codes(BASE_PREGATE)).toEqual([]);
+    expect(codes({ warn: ['secrets'] })).toEqual(['PREGATE_CONFIG_INVALID:warn']);
+    expect(codes({ warn: ['bogus'] })).toEqual(['PREGATE_CONFIG_INVALID:warn']);
+    expect(codes({ runner: 'bun test' })).toEqual(['PREGATE_CONFIG_INVALID:runner']);
+    expect(codes({ dependencies: { '../x': [] } })).toEqual(['PREGATE_CONFIG_INVALID:dependencies["../x"]']);
+    expect(codes({ empty_lanes: 'docs/**' })).toEqual(['PREGATE_CONFIG_INVALID:empty_lanes']);
+    expect(codes({ empty_lanes: ['../x'] })).toEqual(['PREGATE_CONFIG_INVALID:empty_lanes[0]']);
+    expect(codes({ empty_lanes: ['notes/**/*.md'] })).toEqual([]);
+    expect(codes({ selection: { 'ci/job': 'x' } })).toEqual(['PREGATE_CONFIG_INVALID:selection["ci/job"]']);
+    expect(codes({ extra: 1 })).toEqual(['PREGATE_CONFIG_INVALID:extra']);
+  });
+});
+
+describe('docs/no-tests empty lane', () => {
+  const docs = [
+    '.work/round-3-plan.md', 'pkg/.work/notes.md', 'notes/redproof.md', 'notes/REDPROOF.md',
+    'notes/round-3.red-proof.md', 'docs/evidence.md', 'docs/guide.md', 'Docs/Guide.MD',
+    'documentation/index.md', 'plans/2026-10-16.md', 'README.md', 'lib/README.md',
+    'CHANGELOG.md', 'LICENSE', 'notes/implementation-plan.md', 'notes/planning.md', 'src/plan.md',
+    'prompts/system.md', 'src/notes.md', 'src/explanation.md', 'planet.md', 'my-docs/guide.md', 'notes/scratch.md',
+  ];
+  const blocked = [
+    'lib/orphan.js', 'src/app.ts', 'bin/tool', 'scripts/gen.sh', 'notes/scratch.txt',
+    'docs/example.ts', 'test/fixtures/plan.md', 'test/plans/plan.md', '__tests__/redproof.md',
+  ];
+  test('markdown qualifies, including unmarked names; source, test trees and non-markdown do not', () => {
+    for (const file of docs) expect(isDocsEmptyLane(file)).toBe(true);
+    for (const file of blocked) expect(isDocsEmptyLane(file)).toBe(false);
+  });
+  test('empty_lanes adds documentation globs and cannot clear source code or a test-tree file', () => {
+    expect(isDocsEmptyLane('notes/scratch.txt')).toBe(false);
+    expect(isDocsEmptyLane('notes/scratch.txt', ['notes/**/*.txt'])).toBe(true);
+    expect(isDocsEmptyLane('lib/orphan.js', ['**', 'lib/**', '**/*.js'])).toBe(false);
+    expect(isDocsEmptyLane('docs/example.ts', ['docs/**'])).toBe(false);
+    expect(isDocsEmptyLane('bin/tool', ['bin/**'])).toBe(false);
+    expect(isDocsEmptyLane('test/fixtures/plan.md', ['**/*.md', 'test/**'])).toBe(false);
+  });
+});
+
+describe('gstack-pregate (bin)', () => {
+  test('--help prints the exit table and both stages; unknown commands and checks are usage (2)', () => {
+    const repo = fixture();
+    const help = runBin(repo, 'gstack-pregate', ['--help']);
+    expect(help.out).toContain('Exit codes: 0 ok · 1 fail · 2 usage · 3 refused or needs a flag');
+    expect(help.out).toContain('stage 1 mechanical preflight (regen, secrets, strays, literals, timing, guards)');
+    expect(help.out).toContain('stage 2 test execution (lanes)');
+    expect(runBin(repo, 'gstack-pregate', ['bogus']).status).toBe(EXIT.usage);
+    expect(pregate(repo, ['--only', 'hermetic']).status).toBe(EXIT.usage);
+  });
+
+  test('a clean branch passes every check, runs the selected local lane under pipefail and writes a valid pregate.json with both clocks', () => {
+    const repo = fixture();
+    commit(repo, { 'lib/util.js': "exports.add = (a, b) => a + b + 0;\n" });
+    const r = pregate(repo, []);
+    expect(r.status).toBe(EXIT.ok);
+    expect(r.out).toMatch(/^preflight {2}regen {5}pass /m);
+    expect(r.out).toMatch(/^preflight {2}secrets {3}pass /m);
+    expect(r.out).toMatch(/^preflight {2}strays {4}pass /m);
+    expect(r.out).toMatch(/^preflight {2}literals {2}pass /m);
+    expect(r.out).toMatch(/^preflight {2}guards {4}pass .*no guards declared/m);
+    expect(r.out).toMatch(/^tests {6}lanes {5}pass .*1 tests ran in 1 file\(s\), exit 0/m);
+    expect(r.out).toMatch(/^stage 1 \(mechanical preflight\): \d+ ms$/m);
+    expect(r.out).toMatch(/^stage 2 \(test execution\): \d+ ms$/m);
+    expect(r.out).toContain('Tiers ran: unit; requires-remote: none');
+    expect(r.out).toMatch(/GSTACK_RESULT: skill=pregate status=complete run=.*pregate\.json/);
+    const out = readOut(repo);
+    expect(out.schema_version).toBe(1);
+    expect(out.tree).toMatch(/^[0-9a-f]{40}$/);
+    expect(out.checks.map((c: any) => [c.id, c.status, c.stage])).toEqual([['regen', 'pass', 'preflight'], ['secrets', 'pass', 'preflight'], ['strays', 'pass', 'preflight'], ['literals', 'pass', 'preflight'], ['timing', 'pass', 'preflight'], ['guards', 'pass', 'preflight'], ['lanes', 'pass', 'tests']]);
+    for (const c of out.checks) { expect(c.inputs.tree).toBe(out.tree); expect(typeof c.ms).toBe('number'); }
+    expect(check(repo, 'lanes').inputs.command).toMatch(/^[0-9a-f]{64}$/);
+    expect(out.verdict).toBe('pass');
+    expect(runBin(repo, 'gstack-artifact', ['validate', path.join(repo.work, '.gstack/tmp/pregate.json'), '--as', 'pregate']).status).toBe(EXIT.ok);
+  });
+
+  test('p0-4-stale-goldens: regen fails with the exact write command; the tree is untouched', () => {
+    const repo = fixture();
+    commit(repo, { 'src/version.js': "module.exports = { VERSION: '1.1.0' };\n" });
+    const r = pregate(repo, ['--stage', 'preflight']);
+    expect(r.status).toBe(EXIT.fail);
+    expect(r.out).toMatch(/^preflight {2}regen {5}fail .*1 stale: generated\/digest\.md \(REGEN_STALE\)/m);
+    expect(r.out).toContain('regen: regen digest: stale');
+    expect(r.out).toContain('fix: node gen.js  # then commit generated/**');
+    expect(r.err).toContain('(REGEN_STALE)');
+    expect(fs.readFileSync(path.join(repo.work, 'generated/digest.md'), 'utf8')).toBe('# digest v1.0.0\n');
+    expect(readOut(repo).stage2_ms).toBeUndefined();
+  });
+
+  test('missing dependencies: regen is incomplete with REGEN_DEPS_MISSING and the install command, not REGEN_STALE', () => {
+    const repo = fixture({
+      registry: { entries: [{ id: 'digest', command: 'node gen.js', outputs: ['generated/**'], inputs: ['src/version.js', 'gen.js'] }] },
+      baseFiles: {
+        'package.json': JSON.stringify({ name: 'fixture', version: '1.0.0', scripts: { test: 'node --test test/*.test.js' }, devDependencies: { 'fixture-dep': '1.0.0' } }, null, 2) + '\n',
+        'gen.js': "const fs=require('fs');const {VERSION}=require('./src/version.js');let style='plain';try{style=require('fixture-dep').style;}catch{}fs.writeFileSync('generated/digest.md',`# digest v${VERSION} (${style})\\n`);\n",
+        'generated/digest.md': '# digest v1.0.0 (fancy)\n',
+      },
+    });
+    commit(repo, { 'src/version.js': "module.exports = { VERSION: '1.0.0' };\n// touched\n" });
+    const r = pregate(repo, ['--stage', 'preflight', '--only', 'regen']);
+    expect(r.status).not.toBe(EXIT.ok);
+    expect(r.out).toMatch(/^preflight {2}regen {5}incomplete .*dependencies missing; run bun install, then rerun the check \(1 entry unverified: digest\) \(REGEN_DEPS_MISSING\)/m);
+    expect(r.err).toContain('(REGEN_DEPS_MISSING)');
+    expect(r.out + r.err).not.toContain('REGEN_STALE');
+  });
+
+  test('p0-4-scratch-script: zz-probe.sh at the root fails strays (downgraded to warn only when the base config says so); a conventional root file passes', () => {
+    const strict = fixture({ pregate: { ...BASE_PREGATE, warn: [] } });
+    commit(strict, { 'zz-probe.sh': '#!/bin/sh\necho hi\n', 'CONTRIBUTING.md': '# c\n', 'notes.txt': 'x\n', 'newtop/thing.js': 'module.exports = 1;\n' });
+    const r = pregate(strict, ['--stage', 'preflight', '--only', 'strays']);
+    expect(r.status).toBe(EXIT.fail);
+    expect(r.out).toMatch(/^preflight {2}strays {4}fail .*2 stray file\(s\): notes\.txt zz-probe\.sh \(PREGATE_STRAYS\)/m);
+    expect(r.out).toContain('strays: zz-probe.sh: scratch name (zz-probe.sh)');
+    expect(r.out).toContain('strays: notes.txt: new file at the repository root');
+    expect(r.out).toContain('newtop/thing.js: new top-level directory newtop/');
+    expect(r.out).not.toContain('CONTRIBUTING.md:');
+    const lenient = fixture();
+    commit(lenient, { 'zz-probe.sh': '#!/bin/sh\n' });
+    const w = pregate(lenient, ['--stage', 'preflight', '--only', 'strays']);
+    expect(w.status).toBe(EXIT.ok);
+    expect(w.out).toMatch(/^preflight {2}strays {4}warn .*downgraded to warn by origin\/main@/m);
+  });
+
+  test('p0-4-heavy-old-constant: a nightly-only test still asserting the old literal fails literals with file:line', () => {
+    const repo = fixture();
+    commit(repo, { 'lib/retry.js': "exports.MAX_RETRIES = 3;\nexports.TIMEOUT_MS = 9000;\nexports.retry = (fn) => fn();\n" });
+    const r = pregate(repo, ['--stage', 'preflight', '--only', 'literals']);
+    expect(r.status).toBe(EXIT.fail);
+    expect(r.out).toContain('literals: test/nightly/retry-heavy.test.js:3: TIMEOUT_MS still 5000 (now 9000 in lib/retry.js)');
+    expect(r.out).not.toContain('test/retry.test.js');
+    expect(r.err).toContain('(PREGATE_LITERALS)');
+    // Updating the consumer clears it.
+    commit(repo, { 'test/nightly/retry-heavy.test.js': "const test = require('node:test');\nconst assert = require('node:assert');\ntest('heavy', () => assert.strictEqual(require('../../lib/retry.js').TIMEOUT_MS, 9000));\n" });
+    expect(pregate(repo, ['--stage', 'preflight', '--only', 'literals']).status).toBe(EXIT.ok);
+  });
+
+  test('secrets: a credential in an added line fails and cannot be downgraded; a committed-then-removed line is clean', () => {
+    const repo = fixture({ pregate: { ...BASE_PREGATE, warn: ['secrets'] } });
+    const bad = pregate(repo, ['--stage', 'preflight', '--only', 'secrets']);
+    expect(bad.status).toBe(EXIT.refused);
+    expect(bad.err).toContain('secrets cannot be downgraded to warn');
+    const ok = fixture();
+    write(ok.work, 'lib/token.js', `exports.T = 'ghp_${'A'.repeat(36)}';\n`);
+    const r = pregate(ok, ['--stage', 'preflight', '--only', 'secrets']);
+    expect(r.status).toBe(EXIT.fail);
+    expect(r.out).toMatch(/^preflight {2}secrets {3}fail .*credential finding\(s\) in added lines \(github\.pat\) \(PREGATE_SECRETS\)/m);
+    expect(r.out).toContain('HIGH github.pat [secret]');
+    fs.rmSync(path.join(ok.work, 'lib/token.js'));
+    expect(pregate(ok, ['--stage', 'preflight', '--only', 'secrets']).status).toBe(EXIT.ok);
+  });
+
+  test('lanes: tracked planning and evidence markdown is docs/no-tests, and an unmapped source file still fails closed', () => {
+    // No .gstack/pregate.json on the base: documentation cannot be declared as [].
+    const docs = fixture({ pregate: null });
+    commit(docs, {
+      '.work/round-3-plan.md': '# plan\n\nImplementation notes, not a test subject.\n',
+      'notes/redproof.md': '# redproof\n\nThe lane failed, then this note recorded the green run.\n',
+      'docs/evidence.md': '# evidence\n',
+    });
+    const ok = pregate(docs, ['--only', 'lanes', '--explain']);
+    expect(ok.status).toBe(EXIT.ok);
+    expect(ok.err).not.toContain('PREGATE_NO_LANE');
+    expect(ok.out).not.toContain('PREGATE_NO_POLICY');
+    expect(ok.out).toMatch(/docs\/no-tests: 3 documentation file\(s\)/);
+    expect(ok.out).toContain('.work/round-3-plan.md: docs/no-tests (empty lane)');
+    expect(ok.out).toContain('notes/redproof.md: docs/no-tests (empty lane)');
+    expect(ok.out).toContain('docs/evidence.md: docs/no-tests (empty lane)');
+    expect(ok.out).not.toContain('has no test lane');
+
+    const mixed = fixture({ pregate: null });
+    commit(mixed, {
+      '.work/round-3-plan.md': '# plan\n',
+      'lib/orphan.js': 'exports.lonely = () => 2;\n',
+    });
+    // With no policy anywhere the unmapped source file is the PREGATE_NO_POLICY warning with a starter (Lane D), still never a pass, and the Markdown stays docs.
+    const bad = pregate(mixed, ['--only', 'lanes']);
+    expect(bad.status).toBe(EXIT.ok);
+    expect(bad.err).not.toContain('PREGATE_NO_LANE');
+    expect(bad.out).toContain('(PREGATE_NO_POLICY)');
+    expect(bad.out).toContain('lanes: no policy: lib/orphan.js have no test lane');
+    expect(bad.out).toContain('docs/no-tests (empty lane): .work/round-3-plan.md');
+    expect(bad.out).not.toContain('.work/round-3-plan.md has no test lane');
+
+    const extra = fixture({ pregate: { empty_lanes: ['notes/**/*.txt'], runner: 'node --test {files}' } });
+    commit(extra, { 'notes/sketch.txt': 'a note that is not markdown\n' });
+    const declared = pregate(extra, ['--only', 'lanes']);
+    expect(declared.status).toBe(EXIT.ok);
+    expect(declared.err).not.toContain('PREGATE_NO_LANE');
+    expect(declared.out).toContain('docs/no-tests (empty lane): notes/sketch.txt');
+  });
+
+  test('lanes: unreferenced markdown is docs/no-tests; markdown a test reads selects that test', () => {
+    const unread = fixture({ pregate: null });
+    commit(unread, {
+      'prompts/system.md': '# system\n\nAn unmarked prompt, not a plan or a redproof.\n',
+      'notes/scratch.md': '# scratch\n',
+    });
+    const idle = pregate(unread, ['--only', 'lanes', '--explain']);
+    expect(idle.status).toBe(EXIT.ok);
+    expect(idle.err).not.toContain('PREGATE_NO_LANE');
+    expect(idle.out).toMatch(/docs\/no-tests: 2 documentation file\(s\)/);
+    expect(idle.out).toContain('prompts/system.md: docs/no-tests (empty lane)');
+    expect(idle.out).toContain('notes/scratch.md: docs/no-tests (empty lane)');
+    expect(idle.out).not.toContain('has no test lane');
+
+    const named = fixture({ pregate: null });
+    named.git('checkout', '-q', 'main');
+    write(named.work, 'prompts/system.md', '# system\n');
+    write(named.work, 'test/fixtures/sample.md', '# sample\n');
+    write(named.work, 'test/prompt-doc.test.js', "const test = require('node:test');\nconst fs = require('node:fs');\ntest('reads the prompt', () => { fs.readFileSync('prompts/system.md', 'utf8'); });\n");
+    write(named.work, 'test/fixture-doc.test.js', "const test = require('node:test');\nconst fs = require('node:fs');\nconst path = require('node:path');\ntest('reads the fixture', () => { fs.readFileSync(path.join('test', 'fixtures', 'sample.md'), 'utf8'); });\n");
+    named.git('add', '-A');
+    named.git('commit', '-q', '-m', 'tests read markdown');
+    named.git('push', '-q', 'origin', 'main');
+    named.git('checkout', '-q', 'feature');
+    named.git('reset', '--hard', 'main');
+    commit(named, {
+      'prompts/system.md': '# system\n\nupdated\n',
+      'test/fixtures/sample.md': '# sample\n\nupdated\n',
+    });
+    const r = pregate(named, ['--only', 'lanes', '--explain']);
+    expect(r.status).toBe(EXIT.ok);
+    expect(r.out).toContain('test/prompt-doc.test.js ← prompts/system.md');
+    expect(r.out).toContain('test/fixture-doc.test.js ← test/fixtures/sample.md');
+    expect(r.err).not.toContain('PREGATE_NO_LANE');
+    expect(r.out).not.toContain('docs/no-tests');
+  });
+
+  test('lanes: a test that names a markdown file still runs that test', () => {
+    const repo = fixture({ pregate: null });
+    repo.git('checkout', '-q', 'main');
+    write(repo.work, 'test/readme-doc.test.js', "const test = require('node:test');\nconst fs = require('node:fs');\ntest('reads the readme', () => { fs.readFileSync('docs/README.md', 'utf8'); });\n");
+    repo.git('add', '-A');
+    repo.git('commit', '-q', '-m', 'name the doc');
+    repo.git('push', '-q', 'origin', 'main');
+    repo.git('checkout', '-q', 'feature');
+    repo.git('reset', '--hard', 'main');
+    commit(repo, { 'docs/README.md': '# docs\n\nupdated evidence\n' });
+    const r = pregate(repo, ['--only', 'lanes', '--explain']);
+    expect(r.status).toBe(EXIT.ok);
+    expect(r.out).toContain('test/readme-doc.test.js ← docs/README.md');
+    expect(r.err).not.toContain('PREGATE_NO_LANE');
+    expect(r.out).not.toContain('docs/no-tests');
+  });
+
+  test('lanes: a touched file with no test lane is FAIL lanes — <file> has no test lane; a declaration or an explicit [] clears it', () => {
+    const repo = fixture();
+    commit(repo, { 'lib/orphan.js': "exports.lonely = () => 2;\n", 'docs/guide.md': '# guide\n' });
+    const r = pregate(repo, ['--stage', 'tests']);
+    expect(r.status).toBe(EXIT.fail);
+    expect(r.out).toContain('lanes: FAIL lanes — lib/orphan.js has no test lane');
+    expect(r.out).not.toContain('docs/guide.md has no test lane');
+    expect(r.err).toContain('(PREGATE_NO_LANE)');
+    // A declaration on the BASE branch maps it; a declaration only on the branch is unreviewed and ignored.
+    commit(repo, { '.gstack/pregate.json': JSON.stringify({ ...BASE_PREGATE, dependencies: { ...BASE_PREGATE.dependencies, 'lib/orphan.js': ['test/util.test.js'] } }) + '\n' });
+    expect(pregate(repo, ['--stage', 'tests']).status).toBe(EXIT.fail);
+    const head = pregate(repo, ['--stage', 'tests', '--policy-from', 'head']);
+    expect(head.status).toBe(EXIT.ok);
+    expect(head.out).toContain('policy head (unreviewed) .gstack/pregate.json');
+    expect(head.out).toMatch(/^tests {6}lanes {5}pass /m);
+  });
+
+  // Value: protects=a branch that adds its own lane in .gstack/pregate.json and fails PREGATE_NO_LANE under the base policy is told why (the base
+  // copy is the policy) and given both routes, while the base policy still decides; fails_when=the fix line repeats "declare its lane" with no
+  // mention of the base policy, or the run silently reads the head policy and passes; why_new=the circular fix line from gstack-evals #6/#15;
+  // seam=fixture repo; no_claim=ship-queue's handling of a head-policy record
+  test('lanes: a branch whose own pregate.json adds the lane still fails under the base policy, and the fix names the base copy and --policy-from head', () => {
+    const repo = fixture();
+    commit(repo, { 'lib/orphan.js': "exports.lonely = () => 2;\n" });
+    const plain = pregate(repo, ['--stage', 'tests']);
+    expect(plain.status).toBe(EXIT.fail);
+    expect(check(repo, 'lanes').fix).not.toContain('--policy-from head');
+    commit(repo, { '.gstack/pregate.json': JSON.stringify({ ...BASE_PREGATE, dependencies: { ...BASE_PREGATE.dependencies, 'lib/orphan.js': ['test/util.test.js'] } }) + '\n' });
+    const r = pregate(repo, ['--stage', 'tests']);
+    expect(r.status).toBe(EXIT.fail);
+    expect(r.err).toContain('(PREGATE_NO_LANE)');
+    const fix: string = check(repo, 'lanes').fix;
+    expect(fix).toMatch(/^this branch edits \.gstack\/pregate\.json, but the policy comes from origin\/main@[0-9a-f]{12}:\.gstack\/pregate\.json so a branch cannot loosen its own gate/);
+    expect(fix).toContain('land the policy change in its own PR first, or rerun with --policy-from head --allow-repo-commands');
+    expect(fix).toContain('otherwise add a test that names the file');
+  });
+
+  // Value: protects=the own-policy fix line appears only when the base or user copy decides and the branch still carries its own
+  // pregate.json: a --policy-from head run and a branch that deletes the file get the plain fix; fails_when=the configKind 'head' guard or
+  // the status 'D' filter in noLaneFix is dropped; why_new=the head run above passes and never reaches noLaneFix, and no test deletes the
+  // pin file on a NO_LANE run; seam=fixture repo; no_claim=the wording of the plain fix
+  test('lanes: a head-policy run and a branch that deletes pregate.json get the plain no-lane fix', () => {
+    const repo = fixture();
+    commit(repo, { 'lib/orphan.js': "exports.lonely = () => 2;\n", '.gstack/pregate.json': JSON.stringify({ ...BASE_PREGATE, dependencies: { ...BASE_PREGATE.dependencies, 'lib/orphan.js': ['test/util.test.js'] } }) + '\n' });
+    commit(repo, { 'lib/orphan2.js': "exports.alone = () => 3;\n" });
+    const head = pregate(repo, ['--stage', 'tests', '--policy-from', 'head']);
+    expect(head.status).toBe(EXIT.fail);
+    expect(head.err).toContain('(PREGATE_NO_LANE)');
+    expect(check(repo, 'lanes').fix).toMatch(/^add a test that names the file/);
+    commit(repo, { '.gstack/pregate.json': null });
+    const deleted = pregate(repo, ['--stage', 'tests']);
+    expect(deleted.status).toBe(EXIT.fail);
+    expect(deleted.err).toContain('(PREGATE_NO_LANE)');
+    expect(check(repo, 'lanes').fix).toMatch(/^add a test that names the file/);
+  });
+
+  test('lanes: deleted and renamed files select the tests that named them; subprocess targets and computed reads map through declarations and joined literals', () => {
+    const repo = fixture();
+    repo.git('mv', 'lib/util.js', 'lib/maths.js');
+    commit(repo, { 'lib/config.json': '{"limit": 11}\n', 'bin/tool': "#!/usr/bin/env node\nconsole.log('tool');\n// touched\n" });
+    const r = pregate(repo, ['--stage', 'tests', '--explain']);
+    expect(r.out).toContain('test/util.test.js ← lib/util.js (import) [renamed to lib/maths.js]');
+    expect(r.out).toContain('test/config-read.test.js ← lib/config.json (literal) [touched]');
+    expect(r.out).toContain('test/tool-cli.test.js ← bin/tool (literal) [touched]');
+    expect(r.out).toMatch(/^tests {6}lanes {5}fail /m); // util.test.js still requires ../lib/util.js, which is gone: the lane ran and caught it
+    expect(r.out).toContain('(PREGATE_LANE_FAILED)');
+    const del = fixture();
+    commit(del, { 'lib/config.json': null });
+    const d = pregate(del, ['--stage', 'tests', '--explain']);
+    expect(d.out).toContain('test/config-read.test.js ← lib/config.json (literal) [deleted]');
+  });
+
+  test('p0-4-windows-lane-unrun: a Windows-only test changed on Linux is a persisted requires-remote obligation named by workflow/job, and unsupported expressions are explained', () => {
+    const repo = fixture();
+    commit(repo, { 'test/windows-paths.test.js': "const test = require('node:test');\ntest('windows paths', () => { /* touched */ });\n" });
+    const r = pregate(repo, ['--stage', 'tests', '--explain']);
+    expect(r.status).toBe(EXIT.ok);
+    expect(r.out).toMatch(/^tests {6}lanes {5}requires-remote .*1 requires-remote obligation\(s\)/m);
+    expect(r.out).toContain('requires-remote windows.yml/windows-shard (windows): 1 test(s) — test/windows-paths.test.js');
+    expect(r.out).toContain('Tiers ran: unit; requires-remote: windows');
+    expect(r.out).toContain('lane windows.yml/windows-shard: 1 files from manifest `node scripts/windows-list.js`');
+    expect(r.out).toContain('PREGATE: requires-remote (1 uncleared)');
+    const out = readOut(repo);
+    expect(out.requires_remote).toEqual([{ lane: 'windows.yml/windows-shard', platform: 'windows', workflow: 'windows.yml', job: 'windows-shard', tests: ['test/windows-paths.test.js'], receipt: null }]);
+    // Without a manifest the planner-computed matrix is an unsupported expression: every selected test is conservatively in the lane.
+    const bare = fixture({ pregate: { ...BASE_PREGATE, selection: {} } });
+    commit(bare, { 'lib/util.js': "exports.add = (a, b) => a + b + 0;\n" });
+    const b = pregate(bare, ['--stage', 'tests', '--explain']);
+    expect(b.out).toContain('unsupported workflow expression "${{ fromJSON(needs.windows-plan.outputs.matrix) }}" and no selection manifest; treated as unknown');
+    expect(b.out).toContain('requires-remote windows.yml/windows-shard (windows): 1 test(s) — test/util.test.js');
+  });
+
+  test('p0-4-pipe-hidden-failure: a runner whose failure hides behind | tail is red under pipefail; a zero-run lane is red with exit 0', () => {
+    const piped = fixture({ pregate: { ...BASE_PREGATE, runner: 'node --test {files} 2>&1 | tail -n 1' } });
+    commit(piped, { 'lib/util.js': "exports.add = (a, b) => a - b;\n" });
+    const r = pregate(piped, ['--stage', 'tests']);
+    expect(r.status).toBe(EXIT.fail);
+    expect(r.out).toMatch(/^tests {6}lanes {5}fail .*local lane exited 1 .*pipefail\) \(PREGATE_LANE_FAILED\)/m);
+    expect(r.out).toMatch(/lanes: log: .*lanes\.log/);
+    const zero = fixture({ pregate: { ...BASE_PREGATE, runner: 'true {files} && echo "# tests 0"' } });
+    commit(zero, { 'lib/util.js': "exports.add = (a, b) => a + b + 0;\n" });
+    const z = pregate(zero, ['--stage', 'tests']);
+    expect(z.status).toBe(EXIT.fail);
+    expect(z.out).toMatch(/^tests {6}lanes {5}fail .*ZERO-RUN: the runner reported 0 tests/m);
+  });
+
+  test('trust boundary: without --allow-repo-commands the pin-file commands and the runner do not run; regen and lanes are incomplete, never pass', () => {
+    const repo = fixture();
+    commit(repo, { 'src/version.js': "module.exports = { VERSION: '1.1.0' };\n", 'lib/util.js': "exports.add = (a, b) => a + b + 0;\n" });
+    const r = runBin(repo, 'gstack-pregate', ['--base', 'main']);
+    expect(r.status).toBe(EXIT.fail);
+    expect(r.out).toMatch(/^preflight {2}regen {5}incomplete .*repo commands not executed \(pass --allow-repo-commands\).*\(REPO_COMMANDS_NOT_ALLOWED\)/m);
+    expect(r.out).toContain('regen: COMMAND: digest="node gen.js"');
+    expect(r.out).toMatch(/^tests {6}lanes {5}incomplete .*1 local test file\(s\) selected but not run/m);
+    expect(r.out).toContain('GSTACK_RESULT: skill=pregate status=incomplete');
+    expect(fs.readFileSync(path.join(repo.work, 'generated/digest.md'), 'utf8')).toBe('# digest v1.0.0\n');
+    expect(runBin(repo, 'gstack-pregate', ['--base', 'main', '--policy-from', 'head']).status).toBe(EXIT.refused);
+    const gone = runBin(repo, 'gstack-pregate', ['--base', 'nope']);
+    expect(gone.status).toBe(EXIT.refused);
+    expect(gone.err).toContain('(POLICY_SOURCE_UNAVAILABLE)');
+  });
+
+  test('a working-tree change during a check makes it incomplete (the fingerprint moved), and --json carries the file', () => {
+    const repo = fixture({ pregate: { ...BASE_PREGATE, runner: 'echo touched >> lib/util.js && node --test {files}' } });
+    commit(repo, { 'lib/util.js': "exports.add = (a, b) => a + b + 0;\n" });
+    const r = pregate(repo, ['--stage', 'tests', '--json']);
+    expect(r.status).toBe(EXIT.fail);
+    const parsed = JSON.parse(r.out);
+    const lanes = parsed.checks.find((c: any) => c.id === 'lanes');
+    expect(lanes.status).toBe('incomplete');
+    expect(lanes.detail).toContain('working tree changed during the check');
+    expect(lanes.code).toBe('PREGATE_INCOMPLETE');
+    expect(parsed.ok).toBe(false);
+  });
+
+  test('lanes prints the lane list with platform tiers; validate and init cover the working-tree config', () => {
+    const repo = fixture();
+    const l = runBin(repo, 'gstack-pregate', ['lanes']);
+    expect(l.out).toContain('free-tests.yml/unit: tier=unit platform=linux runs-on=ubuntu-24.04 tests=yes (.github/workflows/free-tests.yml:4)');
+    expect(l.out).toContain('windows.yml/windows-shard: tier=platform platform=windows runs-on=windows-latest tests=yes matrix="${{ fromJSON(needs.windows-plan.outputs.matrix) }}"');
+    expect(l.out).toMatch(/^LANES: 3 jobs; tests 2; platform 1$/m);
+    expect(runBin(repo, 'gstack-pregate', ['validate']).out).toContain('PREGATE_CONFIG_VALID: .gstack/pregate.json');
+    write(repo.work, '.gstack/pregate.json', '{"warn": ["secrets"]}\n');
+    const v = runBin(repo, 'gstack-pregate', ['validate']);
+    expect(v.status).toBe(EXIT.fail);
+    expect(v.err).toContain('secrets cannot be downgraded to warn');
+    expect(runBin(repo, 'gstack-pregate', ['init']).status).toBe(EXIT.refused);
+    fs.rmSync(path.join(repo.work, '.gstack/pregate.json'));
+    expect(runBin(repo, 'gstack-pregate', ['init']).out).toContain('PREGATE_CONFIG_WRITTEN');
+    expect(runBin(repo, 'gstack-pregate', ['validate']).status).toBe(EXIT.ok);
+  });
+});
+
+describe('nested JS packages run their own runner from their own directory', () => {
+  const APP = {
+    'app/package.json': JSON.stringify({ name: 'app', scripts: { test: 'vitest run' }, devDependencies: { vitest: '^3.2.0' } }) + '\n',
+    'app/pnpm-lock.yaml': "lockfileVersion: '9.0'\n",
+    'app/src/sum.ts': 'export const sum = (a: number, b: number) => a + b;\n',
+    'app/src/sum.test.ts': "import { expect, test } from 'vitest';\nimport { sum } from './sum';\ntest('sum', () => expect(sum(1, 2)).toBe(3));\n",
+  };
+  /**
+   * A `pnpm` (and `yarn`) on PATH that reports its cwd and argv and prints a vitest summary for the files it is given.
+   * The lane puts its Bun's directory first on PATH, and that directory can hold a real pnpm (/usr/local/bin), which
+   * would install from the network; the lane's bash puts the shim first again through BASH_ENV.
+   */
+  const pmShim = (repo: FixtureRepo): { PATH: string; BASH_ENV: string } => {
+    const dir = path.join(repo.root, 'shim');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const tool of ['pnpm', 'yarn']) fs.writeFileSync(path.join(dir, tool), '#!/usr/bin/env bash\necho "ran in $(basename "$PWD"): $*"\necho " Test Files  1 passed (1)"\necho "      Tests  3 passed (3)"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, 'path.sh'), `PATH='${dir}':"$PATH"\n`);
+    return { PATH: `${dir}:${process.env.PATH ?? ''}`, BASH_ENV: path.join(dir, 'path.sh') };
+  };
+  const ctxFor = (repo: FixtureRepo, env: Record<string, string>) => ({ repoRoot: repo.work, config: DEFAULT_CONFIG, env }) as unknown as PregateContext;
+
+  // Value: protects=a test owned by a nested package that declares vitest runs from that package with its lockfile's package manager
+  //   and package-relative paths, while root-owned tests keep the root runner; fails_when=the root package.json alone decides again
+  //   (the reported `bun test` from the repo root: vi.stubGlobal missing); why_new=only root package.json detection was tested;
+  //   seam=none; no_claim=the runners themselves (plan only)
+  test('a nested vitest package plans its own group with the lockfile\'s package manager; root tests keep the root runner', () => {
+    const repo = fixture({ pregate: null, baseFiles: APP });
+    const ctx = ctxFor(repo, pmShim(repo));
+    expect(planRuns(ctx, ['app/src/sum.test.ts', 'test/util.test.js'])).toEqual({ groups: [
+      { runner: 'node --test {files}', cwd: '', files: ['test/util.test.js'] },
+      { runner: 'pnpm exec vitest run {files}', cwd: 'app', files: ['src/sum.test.ts'] },
+    ], unclaimed: [], missing: [], noPubspec: [] });
+    // The lockfile is found walking up, and a packageManager field outranks it.
+    fs.rmSync(path.join(repo.work, 'app/pnpm-lock.yaml'));
+    write(repo.work, 'yarn.lock', '# yarn lockfile v1\n');
+    expect(planRuns(ctx, ['app/src/sum.test.ts']).groups).toEqual([{ runner: 'yarn vitest run {files}', cwd: 'app', files: ['src/sum.test.ts'] }]);
+    write(repo.work, 'app/package.json', JSON.stringify({ name: 'app', packageManager: 'pnpm@9.15.0', devDependencies: { jest: '^29.0.0' } }) + '\n');
+    expect(planRuns(ctx, ['app/src/sum.test.ts']).groups).toEqual([{ runner: 'pnpm exec jest {files}', cwd: 'app', files: ['src/sum.test.ts'] }]);
+    // Value: protects=a package manager missing from PATH is incomplete naming it, never exit 127 judged as a test failure;
+    //   fails_when=the PATH check is dropped; why_new=new detection path; seam=none; no_claim=a real pnpm install
+    expect(planRuns(ctxFor(repo, { PATH: path.join(repo.root, 'empty-path') }), ['app/src/sum.test.ts'])).toEqual({ groups: [], unclaimed: ['app/src/sum.test.ts'], missing: ['pnpm'], noPubspec: [] });
+    fs.rmSync(path.join(repo.work, 'yarn.lock'));
+    write(repo.work, 'app/package.json', JSON.stringify({ name: 'app', devDependencies: { vitest: '^3.2.0' } }) + '\n');
+    expect(planRuns(ctx, ['app/src/sum.test.ts']).groups).toEqual([{ runner: 'npx vitest run {files}', cwd: 'app', files: ['src/sum.test.ts'] }]);
+  });
+
+  // Value: protects=repos where root detection works today are unchanged: a nested package that declares no test runner stays with the
+  //   root runner from the root, a root vitest stays `npx vitest run` from the root, and a declared runner takes every file;
+  //   fails_when=every nested package.json splits a group or the root command changes; why_new=negative controls for the new
+  //   nested detection; seam=none; no_claim=the runners themselves (plan only)
+  test('negative controls: a nested package without a test runner, a root vitest repo and a declared runner keep today\'s plan', () => {
+    const repo = fixture({ pregate: null, baseFiles: { ...APP, 'app/package.json': JSON.stringify({ name: 'app', scripts: { build: 'tsc' } }) + '\n' } });
+    const ctx = ctxFor(repo, pmShim(repo));
+    write(repo.work, 'bun.lock', '{}\n');
+    expect(planRuns(ctx, ['app/src/sum.test.ts', 'test/util.test.js']).groups).toEqual([{ runner: 'bun test {files}', cwd: '', files: ['app/src/sum.test.ts', 'test/util.test.js'] }]);
+    fs.rmSync(path.join(repo.work, 'bun.lock'));
+    write(repo.work, 'package.json', JSON.stringify({ name: 'fixture', devDependencies: { vitest: '^3.2.0' } }) + '\n');
+    write(repo.work, 'pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
+    expect(planRuns(ctx, ['app/src/sum.test.ts', 'test/util.test.js']).groups).toEqual([{ runner: 'npx vitest run {files}', cwd: '', files: ['app/src/sum.test.ts', 'test/util.test.js'] }]);
+    const declared = { ...ctx, config: { ...DEFAULT_CONFIG, runner: 'bun test {files}' } } as PregateContext;
+    write(repo.work, 'app/package.json', APP['app/package.json']);
+    expect(planRuns(declared, ['app/src/sum.test.ts']).groups).toEqual([{ runner: 'bun test {files}', cwd: '', files: ['app/src/sum.test.ts'] }]);
+  });
+
+  // Value: protects=the reported case end to end: a touched source file in a nested pnpm+vitest package runs `pnpm exec vitest run`
+  //   in that package with the package-relative path and passes on vitest's summary; fails_when=the lane runs from the repo root or
+  //   with the root runner; why_new=no nested package run existed; seam=none; no_claim=a real pnpm or vitest (PATH shim)
+  test('a touched file in a nested pnpm+vitest package runs vitest there', () => {
+    const repo = fixture({ pregate: null, baseFiles: APP });
+    // No workflows, so the Windows lane's unknown matrix cannot turn the selection into a requires-remote obligation.
+    commit(repo, { '.github/workflows/free-tests.yml': null, '.github/workflows/windows.yml': null }, 'no workflows');
+    repo.git('push', '-q', 'origin', 'HEAD:main');
+    repo.git('fetch', '-q', 'origin');
+    commit(repo, { 'app/src/sum.ts': 'export const sum = (a: number, b: number) => b + a;\n' });
+    const r = runBin(repo, 'gstack-pregate', ['--base', 'main', '--allow-repo-commands', '--stage', 'tests', '--only', 'lanes'], pmShim(repo));
+    expect(r.out).toMatch(/^tests {6}lanes {5}pass .*3 tests ran in 1 file\(s\), exit 0/m);
+    expect(r.out).toContain("ran: (cd 'app' && pnpm exec vitest run 'src/sum.test.ts')");
+    expect(fs.readFileSync(/log: (\S+)/.exec(r.out)![1]!, 'utf8')).toContain('ran in app: exec vitest run src/sum.test.ts');
+    expect(r.status).toBe(EXIT.ok);
+  }, 60_000);
+});

@@ -36,7 +36,7 @@
  *   architecture_care:  0 = pragmatic, ship it      ↔  1 = principled, get it right
  */
 
-import { QUESTIONS } from './question-registry';
+import { QUESTIONS, type QuestionDef } from './question-registry';
 
 /** The 5 dimensions of the developer psychographic. */
 export type Dimension =
@@ -188,6 +188,23 @@ export const SIGNAL_MAP: Record<string, Record<string, DimensionDelta[]>> = {
   },
 
   // -----------------------------------------------------------------------
+  // decision-autonomy — does the user trust the agent to apply decisions
+  // without checking back? (Cathedral T7: was the missing signal for the
+  // 'autonomy' dimension; added so /plan-tune annotations can render
+  // 'consult me' vs 'delegate' guidance on merge/rollback questions.)
+  // -----------------------------------------------------------------------
+  'decision-autonomy': {
+    accept: [{ dim: 'autonomy', delta: +0.04 }],
+    reject: [{ dim: 'autonomy', delta: -0.04 }],
+    // common option keys for "I'll review first" vs "go ahead":
+    'review-first': [{ dim: 'autonomy', delta: -0.05 }],
+    proceed: [{ dim: 'autonomy', delta: +0.05 }],
+    // /investigate-style: "agent applies fix" vs "show me the diff first"
+    'apply-fix': [{ dim: 'autonomy', delta: +0.04 }],
+    'show-diff': [{ dim: 'autonomy', delta: -0.04 }],
+  },
+
+  // -----------------------------------------------------------------------
   // session-mode — office-hours goal selection
   // -----------------------------------------------------------------------
   'session-mode': {
@@ -205,6 +222,89 @@ export const SIGNAL_MAP: Record<string, Record<string, DimensionDelta[]>> = {
     fun: [{ dim: 'risk_tolerance', delta: +0.02 }],
   },
 };
+
+/**
+ * Label cues: option key → leading words of UI labels that mean that key.
+ *
+ * The AskUserQuestion hook only sees the label the user clicked ("A) Fix it
+ * now (recommended)"), never a stable key, while SIGNAL_MAP is keyed by the
+ * registry's option keys (#2623). resolveOptionKey() maps a label back to a
+ * key when bin/gstack-question-log records a hook event. Every key also
+ * matches its own words ("fix-now" → "fix now"), so only phrasings beyond
+ * that need an entry here. Cues are
+ * lowercase words separated by single spaces and match at the start of the
+ * normalized label; candidates are limited to the question's own registered
+ * options, and the longest cue wins.
+ */
+const OPTION_LABEL_CUES: Record<string, readonly string[]> = {
+  accept: ['yes', 'approve', 'agree', 'add', 'include', 'apply', 'adopt', 'enable', 'go ahead', 'do it', 'proceed', 'run', 'create', 'merge', 'roll back', 'migrate', 'open', 'promote', 'reorganize', 'polish'],
+  reject: ['no', 'disagree', 'decline', 'cancel', 'abort', 'dont', 'do not', 'keep current', 'keep as is', 'keep it as is'],
+  skip: ['no', 'no thanks', 'not now', 'dont', 'do not', 'pass', 'drop', 'ignore', 'leave it', 'ship as is', 'ship it as is'],
+  defer: ['later', 'fix later', 'add to todos', 'add to todo', 'add a todo', 'todo', 'postpone', 'backlog', 'park', 'track it'],
+  'fix-now': ['fix', 'fix it', 'fix them', 'fix before shipping'],
+  'fix-anyway': ['fix', 'fix it'],
+  investigate: ['dig in', 'look into', 'debug', 'diagnose', 'root cause'],
+  'ack-and-ship': ['ack', 'acknowledge', 'ship', 'ship anyway', 'ship it'],
+  'accept-risk': ['accept', 'accept the risk', 'live with it'],
+  'false-positive': ['not a bug', 'mark false positive', 'mark as false positive', 'mark it false positive'],
+  'add-test': ['add', 'add tests', 'add the test', 'write', 'write the test', 'test it'],
+  expand: ['scope expansion'],
+  selective: ['cherry pick', 'selective expansion'],
+  hold: ['keep', 'keep scope', 'hold scope'],
+  reduce: ['cut', 'trim', 'shrink', 'scope down', 'scope reduction'],
+  revise: ['edit', 'change', 'rework'],
+  restart: ['start over', 'redo'],
+  'build-now': ['build', 'build it now', 'include in this pr'],
+  'keep-local': ['keep'],
+  'keep-vendored': ['keep'],
+  'yes-upgrade': ['yes', 'upgrade'],
+  'always-auto': ['always'],
+  'not-now': ['later', 'snooze'],
+  'never-ask': ['never', 'disable'],
+};
+
+function normalizeOptionLabel(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/\s*\(recommended\)\s*$/, '')
+    .replace(/['\u2019]/g, '')
+    .replace(/^\s*(?:option\s+)?[a-z0-9]\s*(?:[).:]|-(?=\s))\s+/, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Map a chosen UI label to the registered option key of its question.
+ *
+ * Returns the key when exactly one of the question's registered options
+ * matches with the longest cue; undefined for unregistered ids, questions
+ * without options, unmatched labels and ties, so an unclear answer stays
+ * unmapped instead of nudging the wrong dimension.
+ */
+export function resolveOptionKey(question_id: string, choice: string): string | undefined {
+  const options = (QUESTIONS as Record<string, QuestionDef>)[question_id]?.options as string[] | undefined;
+  if (!options?.length) return undefined;
+  if (options.includes(choice)) return choice;
+  const label = normalizeOptionLabel(choice);
+  if (!label) return undefined;
+  let best: string | undefined;
+  let bestWords = 0;
+  let tie = false;
+  for (const key of options) {
+    for (const cue of [key.replace(/-/g, ' '), ...(OPTION_LABEL_CUES[key] ?? [])]) {
+      if (label !== cue && !label.startsWith(cue + ' ')) continue;
+      const words = cue.split(' ').length;
+      if (words > bestWords) {
+        best = key;
+        bestWords = words;
+        tie = false;
+      } else if (words === bestWords && best !== key) {
+        tie = true;
+      }
+    }
+  }
+  return tie ? undefined : best;
+}
 
 /**
  * Apply a user choice for a question to the running dimension totals.
@@ -238,7 +338,7 @@ export function validateRegistrySignalKeys(): {
   extra: string[];
 } {
   const registrySignalKeys = new Set<string>();
-  for (const q of Object.values(QUESTIONS)) {
+  for (const q of Object.values(QUESTIONS) as QuestionDef[]) {
     if (q.signal_key) registrySignalKeys.add(q.signal_key);
   }
   const mapKeys = new Set(Object.keys(SIGNAL_MAP));

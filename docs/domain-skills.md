@@ -1,5 +1,7 @@
 # Domain Skills
 
+> **Scope:** domain-skills are a feature of gstack's own browser engine (`$B`), the **fallback** that runs when the Aside browser is absent (Linux, Windows, a closed Aside app). Skills driving Aside record per-project learnings through `/learn` instead. See [BROWSER.md](../BROWSER.md).
+
 Per-site notes the agent writes for itself. Compounds across sessions: once an
 agent figures out something non-obvious about a website, it saves a skill, and
 future sessions on that host get the note injected into their prompt context.
@@ -121,3 +123,12 @@ following events are written to `~/.gstack/analytics/browse-telemetry.jsonl`:
 
 Hostname only — no body content, no agent text. Disable entirely with
 `gstack-config set telemetry off` or `GSTACK_TELEMETRY_OFF=1`.
+
+## In brief: domain skills and the raw CDP escape hatch
+
+Two browser primitives in gstack's own engine (the fallback path when Aside isn't there) compound the agent over time:
+
+- **`$B domain-skill save`** — agent saves a per-site note (e.g., "LinkedIn's Apply button lives in an iframe") that fires automatically next time it visits that hostname. Quarantined → active after 3 successful uses → optional cross-project promotion via `$B domain-skill promote-to-global`. Storage lives alongside `/learn`'s per-project learnings file.
+- **`$B cdp <Domain.method>`** — raw Chrome DevTools Protocol escape hatch for the rare case curated commands miss. Deny-default: methods must be explicitly added to `browse/src/cdp-allowlist.ts` with a one-line justification. Two-tier mutex serializes browser-scoped CDP calls against per-tab work. Output for data-exfil methods is wrapped in the UNTRUSTED envelope.
+
+> Want raw CDP with no rails, no allowlist, no daemon — just thin transport from agent to Chrome? [browser-use/browser-harness-js](https://github.com/browser-use/browser-harness-js) is a different philosophy (agent-authored helpers vs gstack's curated commands) and a good fit if you don't want gstack's security stack. The two can coexist: gstack's `$B cdp` and harness can both attach to the same Chrome via Playwright's `newCDPSession`.
